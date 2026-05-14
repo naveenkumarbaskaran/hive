@@ -25,7 +25,7 @@ hive/
 │   ├── llm_client.py     #   Pluggable LLM connector
 │   ├── agents.py         #   Agent definitions + personalities
 │   ├── state.py          #   Blackboard, events, checkpoints
-│   ├── crew.py           #   12-phase orchestrator
+│   ├── crew.py           #   13-phase orchestrator
 │   ├── prompts.py        #   All LLM prompt templates
 │   ├── ui.py             #   Terminal UI (ANSI)
 │   ├── connectors.py     #   External knowledge ingestion
@@ -75,7 +75,7 @@ hive/
 
 ## Adding a New Agent
 
-1. Define the agent in `hive/agents.py` (add to `AGENT_ROSTER`)
+1. Define the agent in `hive/agents.py` (add to `AgentRoster`)
 2. Add system + task prompts in `hive/prompts.py`
 3. Add the phase logic in `hive/crew.py`
 4. Add color + emoji in `hive/ui.py`

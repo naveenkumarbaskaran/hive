@@ -30,13 +30,18 @@ and structured prompts.
 │      ↕ signoff                  ↕ signoff         Ratification  │
 │                                                      │          │
 │  Phase 7: Crew Assembly ──► Phase 8: Build (layered) │          │
-│      │                         │ ┌──────────────┐    │          │
-│      │                         │ │ Dev → Review  │    │          │
-│      │                         │ │   → Revise    │    │          │
-│      │                         │ │   → Judge?    │    │          │
-│      │                         │ └──────────────┘    │          │
+│      │                         │ ┌────────────────┐  │          │
+│      │                         │ │ Dev → Review    │  │          │
+│      │                         │ │  (parallel/layer│  │          │
+│      │                         │ │   → Revise      │  │          │
+│      │                         │ │   → Judge?)     │  │          │
+│      │                         │ └────────────────┘  │          │
 │      ▼                         ▼                     ▼          │
-│  Phase 9: Integration ──► Phase 10: Release                     │
+│  Phase 9: Integration ──► Phase 10: Test Docs ──► Phase 11:    │
+│                              (UAT.md + SIT.md)      Release     │
+│                                                   (with Handover│
+│                                                    + Packaging  │
+│                                                    + Delivery)  │
 └────────┬───────────────────────┬─────────────────┬──────────────┘
          │                       │                 │
          ▼                       ▼                 ▼
@@ -50,8 +55,10 @@ and structured prompts.
 │ Judge  ⚖️   │    │  Sign-offs       │    │  Sign-off UI │
 │ Pixel  🎨   │    │  Events bus      │    │              │
 │ Flow   🧭   │    │  Checkpoints     │    └──────────────┘
-│ Alex   👤   │    │                  │
-│ Dev×N  🔨   │    └────────┬─────────┘
+│ Alex   👤   │    │  uat_doc         │
+│ Morgan 📬   │    │  sit_doc         │
+│ Dev×N  🔨   │    │  handover_doc    │
+│ Rev×N  🔎   │    └────────┬─────────┘
 └─────────────┘             │
                             ▼
                  ┌──────────────────┐
@@ -59,8 +66,9 @@ and structured prompts.
                  │                  │
                  │  ModelTier enum  │
                  │  Auto-detect     │
+                 │  Model pool +    │
+                 │  429 rotation    │
                  │  Anthropic SDK   │
-                 │  Anthropic proxy │
                  │  OpenAI compat   │
                  └──────────────────┘
                             │
@@ -74,17 +82,17 @@ and structured prompts.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `llm_client.py` | ~490 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + tier escalation. |
+| `hive/llm_client.py` | ~626 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + 429 model-pool rotation. |
 | `hive/__init__.py` | ~20 | Package exports |
 | `hive/connectors.py` | ~570 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest |
 | `hive/memory.py` | ~440 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
-| `hive/state.py` | ~690 | Blackboard, UserProfile, LogEntry, Events, knowledge_base, repo_analysis, memory_context, checkpoint save/load |
-| `hive/agents.py` | ~310 | Agent dataclass with logbook+memory-wired think(), AgentRoster, DEV_POOL |
-| `hive/prompts.py` | ~700 | System prompts + task templates for all 10+ agent roles (with user/knowledge/repo context) |
-| `hive/ui.py` | ~820 | ANSI terminal rendering, welcome intake, knowledge intake, repo clone summary, memory stats, sign-off prompts, logbook summary |
-| `hive/crew.py` | ~1440 | 12-phase orchestrator (welcome→ingest→release), parsers, repo analysis, memory recording, build/review/revise loop |
+| `hive/state.py` | ~725 | Blackboard, UserProfile, LogEntry, Events, knowledge_base, repo_analysis, uat_doc, sit_doc, handover_doc, checkpoint save/load |
+| `hive/agents.py` | ~340 | Agent dataclass with logbook+memory-wired think(), AgentRoster (10 named agents), DEV_POOL, REVIEWER_POOL |
+| `hive/prompts.py` | ~1094 | System prompts + task templates for all agent roles including UAT, SIT, Handover, Packaging, DM |
+| `hive/ui.py` | ~860 | ANSI terminal rendering, sign-off prompts, logbook summary with model-switch stats, delivery summary |
+| `hive/crew.py` | ~1742 | 13-phase orchestrator: parallel build (ThreadPoolExecutor), test docs, packaging, handover, delivery checklist |
 | `run_hive.py` | ~100 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo |
-| `test_hive.py` | ~1700 | 206 unit tests (no API calls) |
+| `tests/test_hive.py` | ~1876 | 291 unit tests (no API calls) |
 
 ## Key Design Patterns
 
@@ -112,26 +120,32 @@ Agents request capability, not model names. The `LLMClient` resolves:
 Tiers can be escalated on retry: `tier.escalate()` bumps FAST→BALANCED→POWERFUL.
 
 ### 3. Resilient LLM Calls & Dynamic Model Routing
-Every agent call goes through a **3-layer resilience system**:
+Every agent call goes through a **4-layer resilience system**:
 
 ```
 Agent.think()  ──►  LLMClient.chat()  ──►  Backend
      │                     │                      │
      │  LogEntry created   │  Retry loop:         │
      │  on success/fail    │    1. Try original    │
-     │                     │    2. Strip thinking  │
-     │                     │    3. Escalate tier   │
-     │                     │    4. Raise if exhaust │
+     │                     │    2. On 429: rotate  │
+     │                     │       model in pool   │
+     │                     │    3. Strip thinking  │
+     │                     │    4. Escalate tier   │
+     │                     │    5. Raise if exhaust│
      ▼                     ▼                      ▼
   Logbook entry         Resilience metadata     LLM Response
   + LLM_INCIDENT event  on LLMResponse          (text, tokens)
 ```
 
 **Retry strategy** (configurable, default 3 attempts):
-- Attempt 1: try with requested tier + thinking
-- Attempt 2 on fail: strip `thinking` param (proxy may not support it)
-- Attempt 3 on fail: escalate tier (FAST→BALANCED→POWERFUL), use bigger model
-- All failures: raise with full error history attached
+- **429 rate-limit**: immediately rotate to the next model in the pool
+  (`LLM_FALLBACK_MODELS` + tier models), with short 0.5–2s backoff.
+  When the entire pool is exhausted, it resets and waits longer before retrying.
+  Escalated-tier models that are also rate-limited are skipped.
+- **Other failures**: exponential backoff.
+  - After first failure: strip `thinking` param (proxy may not support it)
+  - After second failure: escalate tier (FAST→BALANCED→POWERFUL)
+  - All retries exhausted: raise with full error history attached
 
 Each `LLMResponse` carries resilience metadata:
 ```python
@@ -139,14 +153,15 @@ LLMResponse(
     text="...",
     tier_requested="fast", tier_used="balanced",  # was escalated
     retries=2, tier_escalated=True, thinking_stripped=True,
-    errors=["TimeoutError: ...", "HTTPError: 503"],
+    model_switched=True,                           # rotated due to 429
+    errors=["HTTPStatusError: 429", "HTTPError: 503"],
     duration_s=12.3,
 )
 ```
 
-Different agents **automatically use different models** based on their tier—
-no configuration needed. If a lighter model fails, the system transparently
-escalates to a heavier one without losing context.
+Different agents **automatically use different models** based on their tier —
+no configuration needed. If a lighter model fails or is rate-limited, the system
+transparently escalates or rotates without losing context.
 
 ### 4. Event Bus
 Every agent action emits an `Event(type, agent, content)`. The `TerminalUI`
@@ -161,22 +176,32 @@ Not every project needs every agent:
 
 ```python
 agents = AgentRoster.compose(has_frontend=True, dev_count=3)
-# → Scout, Penny, Archie, Quinn, Judge (always)
+# → Scout, Penny, Archie, Quinn, Judge, Morgan (always)
 # → Pixel, Flow, Alex (only if has_frontend)
 # → Dexter, Devi, Dale (dev pool, count from dep graph)
+# → Remy, River, Robin (sub-reviewers, spawned by Quinn on >8 files)
 ```
 
-### 6. Dependency-Layered Build
+### 6. Dependency-Layered Parallel Build
 Archie's contract defines a file dependency graph. `dep_layers()` does a
 topological sort into parallel layers:
 
 ```
-Layer 1: [models.py, config.py]     ← no deps, build in parallel
-Layer 2: [routes.py, middleware.py]  ← depend on layer 1
+Layer 1: [models.py, config.py]     ← no deps, built in parallel
+Layer 2: [routes.py, middleware.py]  ← depend on layer 1, built in parallel
 Layer 3: [app.py]                    ← depends on layer 2
 ```
 
+Each layer runs with `ThreadPoolExecutor(max_workers=min(len(layer), 4))`.
+A `threading.Lock` protects writes to `board.registry` and `board.all_deferred`.
+`_save()` (checkpoint) is called once per layer after all futures complete.
+
 Each file goes through: **Generate → Review → (Revise?) → Approve/Escalate**
+
+**Quinn sub-reviewer delegation:** on builds with more than 8 files, Quinn
+spawns ephemeral FAST-tier sub-reviewer agents (Remy, River, Robin, Riley) —
+one per file batch. Quinn only re-reviews files that a sub-reviewer FAILed,
+avoiding a single-agent bottleneck on large builds.
 
 ### 7. User Welcome & Profile
 Before any AI agent runs, the pipeline collects the user's identity:
@@ -260,7 +285,8 @@ The delivery summary prints a logbook digest:
     Total time    : 142.3s
     Retries       : 2
     Tier escalated: 1x
-    Models used   : claude-sonnet-4-20250514 (23x)
+    Model switches: 3x (429 rotation)
+    Models used   : claude-sonnet-4-20250514 (20x), claude-haiku-4-20250414 (3x)
 ```
 
 ### 11. Connector System — External Knowledge Ingest
@@ -394,7 +420,7 @@ User Feature Request
    Scout (FAST) ──────► Repo Analysis (if git repo attached) → ResearchContext JSON
         │
         ▼
-   Penny (BALANCED) ───► Interview Questions ──► User Answers
+   Penny (BALANCED) ───► Interview Questions (with Red Flag pushback) ──► User Answers
         │
         ▼
    Penny (BALANCED) ───► PRD (Markdown) ──► [User Sign-off]
@@ -412,8 +438,8 @@ User Feature Request
    AgentRoster.compose() ──► Active crew + dev pool
         │
         ▼
-   For each dep layer:
-     Dev (POWERFUL) ──► Code ──► Quinn (FAST) review
+   For each dep layer (parallel within layer):
+     Dev (POWERFUL) ──► Code ──► Quinn/sub-reviewer (FAST) review
                                   ├── PASS → save to src/
                                   ├── PASS_WITH_NOTES → save + defer
                                   ├── FAIL → revise (up to 3x)
@@ -423,12 +449,20 @@ User Feature Request
    Quinn (FAST) ──► Integration review (all files together)
         │
         ▼
-   Penny (BALANCED) ──► Release notes
+   Alex (FAST) ──► UAT.md  (pseudo-user scenarios, copy-paste ready)
+   Quinn (FAST) ──► SIT.md  (system integration test plan)
+        │
+        ▼
+   Penny (BALANCED) ──► release_notes.md
+   Penny (BALANCED) ──► Handover.md  (arch summary, how-to-run, attribution, backlog)
+   Penny (BALANCED) ──► Packaging artifacts  (pyproject.toml / package.json / go.mod …)
+   Morgan (BALANCED) ──► delivery_checklist.md  (final checklist + crew sign-offs)
         │
         ▼
    projects/<slug>/
-     ├── docs/     (PRD, architecture, contract, research, interviews, signoffs, release notes)
-     ├── src/      (generated source code)
+     ├── docs/     (PRD, arch, contract, research, interviews, sign-offs,
+     │              release notes, UAT, SIT, Handover, delivery checklist)
+     ├── src/      (generated source + packaging artifacts)
      └── checkpoints/ (board snapshots for resume)
 ```
 
@@ -449,8 +483,16 @@ projects/
       knowledge_base.json      # Ingested external knowledge items
       logbook.json             # Every LLM call: agent, model, tokens, retries, errors
       release_notes.md         # Final summary with parties & attribution table
+      UAT.md                   # Alex: pseudo-user acceptance test scenarios
+      SIT.md                   # Quinn: system integration test plan
+      Handover.md              # Penny: arch summary, how-to-run, backlog, attribution
+      delivery_checklist.md    # Morgan: final delivery checklist + crew sign-offs
     src/
       <files defined in contract>
+      pyproject.toml           # Python: hatchling config + extracted deps (or package.json / go.mod)
+      requirements.txt         # Python: pip-installable deps
+      Makefile                 # install / test / lint / run targets
+      README.md                # What it does, install, usage, env vars
     checkpoints/
       board_<timestamp>.json   # Full blackboard snapshots
       board_latest.json        # Quick-resume pointer
@@ -474,7 +516,8 @@ export LLM_API_KEY="your-key"
 export LLM_MODEL="claude-sonnet-4-20250514"
 export LLM_MODEL_BIG="claude-sonnet-4-20250514"
 export LLM_MODEL_SMALL="claude-haiku-4-20250414"
-export LLM_FORMAT="auto"           # auto | anthropic | openai
+export LLM_FORMAT="auto"                          # auto | anthropic | openai
+export LLM_FALLBACK_MODELS="model-b,model-c"      # optional: 429 rotation pool
 ```
 
 ## Dependencies
