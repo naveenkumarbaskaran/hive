@@ -753,10 +753,27 @@ class TerminalUI:
         if b.release_verdict:
             print(colored(f"  🚀 Release: {b.release_verdict[:100]}", C.GREEN, C.BOLD))
 
-        # Project location
+        # Project location + generated docs index
         if b.project_slug:
             print()
             print(colored(f"  📂 Project files: {b.project_root}", C.CYAN))
+            # List all docs generated
+            docs_dir = b.docs_dir
+            doc_files = sorted(docs_dir.glob("*.md")) + sorted(docs_dir.glob("*.json"))
+            if doc_files:
+                print(colored("  📄 Generated docs:", C.CYAN, C.BOLD))
+                for doc in doc_files:
+                    size_kb = doc.stat().st_size / 1024
+                    print(colored(f"    → {doc.name} ({size_kb:.1f} KB)", C.DIM))
+            # List packaging artifacts in src/
+            src_dir = b.src_dir
+            pkg_files = [f for f in sorted(src_dir.iterdir())
+                         if f.suffix in (".toml", ".txt", ".json", ".mod")
+                         or f.name in ("Makefile", "README.md", ".npmrc")]
+            if pkg_files:
+                print(colored("  📦 Packaging artifacts:", C.GREEN, C.BOLD))
+                for pf in pkg_files:
+                    print(colored(f"    → {pf.name}", C.DIM))
 
         # Memory summary (if memory_stats are set by the crew)
         memory_stats = getattr(b, '_memory_stats', None)
@@ -787,6 +804,7 @@ class TerminalUI:
             total_retries = sum(e.retries for e in b.logbook)
             total_escalations = sum(1 for e in b.logbook if e.tier_escalated)
             total_thinking_strips = sum(1 for e in b.logbook if e.thinking_stripped)
+            total_model_switches = sum(1 for e in b.logbook if getattr(e, "model_switched", False))
             total_failures = sum(1 for e in b.logbook if not e.success)
             total_input = sum(e.input_tokens for e in b.logbook)
             total_output = sum(e.output_tokens for e in b.logbook)
@@ -800,6 +818,8 @@ class TerminalUI:
                 print(colored(f"    Retries       : {total_retries}", C.YELLOW))
             if total_escalations:
                 print(colored(f"    Tier escalated: {total_escalations}x", C.YELLOW))
+            if total_model_switches:
+                print(colored(f"    Model switches: {total_model_switches}x (429 rotation)", C.YELLOW))
             if total_thinking_strips:
                 print(colored(f"    Thinking strip: {total_thinking_strips}x", C.YELLOW))
             if total_failures:

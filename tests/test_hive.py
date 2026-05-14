@@ -264,7 +264,7 @@ class TestAgentRoster:
 
     def test_all_agents_count(self):
         agents = AgentRoster.all_agents()
-        assert len(agents) == 8  # scout, penny, archie, quinn, judge, pixel, flow, alex
+        assert len(agents) == 9  # scout, penny, archie, quinn, judge, pixel, flow, alex, dm (Morgan)
 
     def test_compose_no_frontend(self):
         agents = AgentRoster.compose(has_frontend=False, dev_count=2)

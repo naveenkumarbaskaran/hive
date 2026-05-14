@@ -21,7 +21,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from hive.llm_client import LLMClient, llm as _default_llm
@@ -29,7 +31,7 @@ from hive.state import (
     Blackboard, EventType, ResearchContext, FileEntry, Issue,
     Amendment, UserProfile, save_checkpoint,
 )
-from hive.agents import Agent, AgentRoster, make_dev_agent
+from hive.agents import Agent, AgentRoster, make_dev_agent, make_reviewer_agent
 from hive.connectors import (
     ConnectorRegistry, KnowledgeItem, ConnectorType,
     knowledge_for_agent, knowledge_context as _knowledge_context,
@@ -51,6 +53,11 @@ from hive.prompts import (
     INTEGRATION_SYSTEM, INTEGRATION_TASK,
     PENNY_RATIFY_SYSTEM,
     RELEASE_SYSTEM, RELEASE_TASK,
+    UAT_SYSTEM, UAT_TASK,
+    SIT_SYSTEM, SIT_TASK,
+    HANDOVER_SYSTEM, HANDOVER_TASK,
+    PACKAGING_SYSTEM, PACKAGING_TASK,
+    DM_SYSTEM, DM_TASK,
 )
 from hive.ui import TerminalUI
 from hive.memory import MemoryManager
@@ -228,6 +235,7 @@ class EPTCrew:
         # State
         self.board = Blackboard(feature=feature)
         self.agents: dict[str, Agent] = {}
+        self._registry_lock = threading.Lock()  # protects concurrent registry + deferred writes
 
         # Memory
         self.memory = MemoryManager()  # initialized properly after project_slug is known
@@ -269,6 +277,7 @@ class EPTCrew:
             ("crew",          self._phase_crew),
             ("build",         self._phase_build),
             ("integration",   self._phase_integration),
+            ("test_docs",     self._phase_test_docs),
             ("release",       self._phase_release),
         ]
 
@@ -928,21 +937,52 @@ class EPTCrew:
                             f"Build layer {layer_idx + 1}/{len(layers)}: {', '.join(layer)}")
             self.ui.flush_events()
 
-            for fname in layer:
-                completed += 1
-                self.ui.progress(completed, total_files, fname)
+        for layer_idx, layer in enumerate(layers):
+            self.board.emit(EventType.PHASE_START, "system",
+                            f"Build layer {layer_idx + 1}/{len(layers)}: {', '.join(layer)}")
+            self.ui.flush_events()
 
-                # Skip files already approved (e.g. on resume)
-                existing = self.board.registry.get(fname)
-                if existing and existing.approved:
-                    self.ui.file_status(fname, "approved", "(from checkpoint)")
-                    continue
+            # Files in the same dep layer have no inter-dependencies — build in parallel
+            max_workers = min(len(layer), 4)
+            if max_workers == 1:
+                # Single file in layer — skip thread overhead
+                for fname in layer:
+                    completed += 1
+                    self.ui.progress(completed, total_files, fname)
+                    existing = self.board.registry.get(fname)
+                    if existing and existing.approved:
+                        self.ui.file_status(fname, "approved", "(from checkpoint)")
+                        continue
+                    success = self._build_file(fname)
+                    if success:
+                        self.ui.file_status(fname, "approved")
+                    else:
+                        self.ui.file_status(fname, "failed", "exceeded max revisions")
+            else:
+                futures: dict = {}
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    for fname in layer:
+                        existing = self.board.registry.get(fname)
+                        if existing and existing.approved:
+                            completed += 1
+                            self.ui.progress(completed, total_files, fname)
+                            self.ui.file_status(fname, "approved", "(from checkpoint)")
+                            continue
+                        futures[executor.submit(self._build_file, fname)] = fname
 
-                success = self._build_file(fname)
-                if success:
-                    self.ui.file_status(fname, "approved")
-                else:
-                    self.ui.file_status(fname, "failed", "exceeded max revisions")
+                    for future in as_completed(futures):
+                        fname = futures[future]
+                        completed += 1
+                        self.ui.progress(completed, total_files, fname)
+                        try:
+                            success = future.result()
+                        except Exception as exc:
+                            logger.error("Unhandled error building %s: %s", fname, exc)
+                            success = False
+                        if success:
+                            self.ui.file_status(fname, "approved")
+                        else:
+                            self.ui.file_status(fname, "failed", "exceeded max revisions")
 
             self._save()  # checkpoint after each layer
 
@@ -955,7 +995,8 @@ class EPTCrew:
         entry = self.board.registry.get(fname)
         if not entry:
             entry = FileEntry(name=fname)
-            self.board.registry[fname] = entry
+            with self._registry_lock:
+                self.board.registry[fname] = entry
 
         # Get contract metadata (use cached parse from _phase_build)
         contract_data = getattr(self, '_contract_cache', None)
@@ -966,11 +1007,12 @@ class EPTCrew:
             )
         meta = contract_data.get(fname, {})
 
-        # Select a dev agent (round-robin)
+        # Select a dev agent (round-robin, lock for consistent key ordering)
         dev_agents = [a for a in self.agents.values() if a.id.startswith("dev_") and a.active]
         if not dev_agents:
             dev_agents = [make_dev_agent(0)]
-        dev_idx = list(self.board.registry.keys()).index(fname) % len(dev_agents)
+        with self._registry_lock:
+            dev_idx = list(self.board.registry.keys()).index(fname) % len(dev_agents)
         dev = dev_agents[dev_idx]
         entry.assigned_dev = dev.name
 
@@ -1035,7 +1077,8 @@ class EPTCrew:
                 entry.approved = True
                 deferred = [i for i in issues if i.severity != "blocker"]
                 entry.deferred_issues = deferred
-                self.board.all_deferred.extend((fname, i) for i in deferred)
+                with self._registry_lock:
+                    self.board.all_deferred.extend((fname, i) for i in deferred)
                 self.board.emit(EventType.VERDICT, "quinn",
                                 f"PASS_WITH_NOTES: {fname} ({len(deferred)} deferred)",
                                 target=fname)
@@ -1107,7 +1150,18 @@ class EPTCrew:
         all_issues: list[Issue] = []
         worst_verdict = "PASS"
 
-        # Quinn always reviews
+        # On large builds (>8 files), delegate to a sub-reviewer so Quinn isn't the
+        # sole bottleneck. Sub-reviewers use FAST tier; Quinn does final integration pass.
+        large_build = len(self.board.file_plan) > 8
+        if large_build:
+            reviewer_idx = list(self.board.file_plan).index(fname) % 4
+            reviewer = make_reviewer_agent(reviewer_idx)
+            self.board.emit(EventType.SPEAKING, reviewer.id,
+                            f"Sub-review: {fname}")
+        else:
+            reviewer = AgentRoster.QUINN
+
+        # Primary review (Quinn or sub-reviewer)
         quinn = AgentRoster.QUINN
         task = QUINN_REVIEW_TASK.format(
             full_context=self.board.full_context_header(),
@@ -1116,14 +1170,27 @@ class EPTCrew:
             code=entry.code,
         )
         self._set_memory("quinn")
-        resp = quinn.think(self.board, task, QUINN_SYSTEM, self.client)
+        resp = reviewer.think(self.board, task, QUINN_SYSTEM, self.client)
         self._clear_memory()
         verdict, issues = _parse_verdict(resp)
         for i in issues:
-            i.from_agent = "quinn"
+            i.from_agent = reviewer.id
         all_issues.extend(issues)
         if verdict == "FAIL":
             worst_verdict = "FAIL"
+            # On a FAIL from a sub-reviewer, escalate to Quinn for second opinion
+            if large_build:
+                self.board.emit(EventType.SPEAKING, "quinn",
+                                f"Sub-reviewer flagged FAIL on {fname} — re-reviewing")
+                self._set_memory("quinn")
+                resp2 = quinn.think(self.board, task, QUINN_SYSTEM, self.client)
+                self._clear_memory()
+                v2, iss2 = _parse_verdict(resp2)
+                for i in iss2:
+                    i.from_agent = "quinn"
+                all_issues.extend(iss2)
+                if v2 != "FAIL":
+                    worst_verdict = v2  # Quinn overrides sub-reviewer on pass
         elif verdict == "PASS_WITH_NOTES" and worst_verdict != "FAIL":
             worst_verdict = "PASS_WITH_NOTES"
 
@@ -1270,6 +1337,79 @@ class EPTCrew:
         self.ui.phase_footer("Integration Testing")
 
     # ─────────────────────────────────────────────────────────────────────────
+    #  Phase 10: Test Docs — UAT + SIT
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _phase_test_docs(self) -> None:
+        self.board.current_phase = "test_docs"
+        self.ui.phase_header("Test Documentation")
+        self.ui.flush_events()
+
+        alex = AgentRoster.ALEX
+        quinn = AgentRoster.QUINN
+
+        user_info = ""
+        if self.board.user_profile and self.board.user_profile.name:
+            up = self.board.user_profile
+            user_info = f"Requested by: {up.name}"
+            if up.role:
+                user_info += f" ({up.role})"
+
+        deferred_text = "\n".join(
+            f"- [{i.severity}] {fname}: {i.description}"
+            for fname, i in self.board.all_deferred
+        ) or "(none)"
+
+        prd_lines = self.board.prd.splitlines()
+        prd_summary = "\n".join(
+            l for l in prd_lines if l.strip().startswith("FR-") or l.strip().startswith("##")
+        ) or self.board.prd[:2000]
+
+        # ── UAT — Alex writes from pseudo-user perspective ──
+        uat_task = UAT_TASK.format(
+            feature=self.feature,
+            user_info=user_info,
+            full_context=self.board.full_context_header(),
+            prd_summary=prd_summary,
+            approved_summary=self.board.approved_summary(),
+            deferred_issues=deferred_text,
+        )
+        self.board.emit(EventType.WRITING, "alex", "Writing UAT scenarios...")
+        self.ui.flush_events()
+        self._set_memory("alex")
+        uat_resp = alex.think(self.board, uat_task, UAT_SYSTEM, self.client, max_tokens=4096)
+        self._clear_memory()
+        self.board.uat_doc = uat_resp
+        uat_path = self.board.docs_dir / "UAT.md"
+        atomic_write(uat_path, uat_resp)
+        self.board.emit(EventType.WRITING, "alex", f"UAT saved: {uat_path}")
+        self.ui.flush_events()
+
+        # ── SIT — Quinn writes the integration test plan ──
+        sit_task = SIT_TASK.format(
+            feature=self.feature,
+            full_context=self.board.full_context_header(),
+            contract=self.board.contract,
+            approved_summary=self.board.approved_summary(),
+            deferred_issues=deferred_text,
+            integration_verdict=self.board.integration_verdict,
+        )
+        self.board.emit(EventType.WRITING, "quinn", "Writing SIT plan...")
+        self.ui.flush_events()
+        self._set_memory("quinn")
+        sit_resp = quinn.think(self.board, sit_task, SIT_SYSTEM, self.client, max_tokens=4096)
+        self._clear_memory()
+        self.board.sit_doc = sit_resp
+        sit_path = self.board.docs_dir / "SIT.md"
+        atomic_write(sit_path, sit_resp)
+        self.board.emit(EventType.WRITING, "quinn", f"SIT saved: {sit_path}")
+        self.ui.flush_events()
+
+        self._save()
+        self.board.completed_phases.append("test_docs")
+        self.ui.phase_footer("Test Documentation")
+
+    # ─────────────────────────────────────────────────────────────────────────
     #  Phase 10: Release
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -1330,6 +1470,15 @@ class EPTCrew:
         self.board.emit(EventType.WRITING, "penny",
                         f"Release notes saved: {release_path}")
 
+        # ── Handover document ──
+        self._generate_handover(deferred_text, amend_text, signoff_log, user_info)
+
+        # ── Stack-aware packaging artifacts ──
+        self._generate_packaging_artifacts()
+
+        # ── Delivery Manager final checklist ──
+        self._generate_delivery_checklist(deferred_text, user_info)
+
         # ── Distill memories to global ──
         new_lessons = self.memory.distill_to_global()
         self.memory.save_global()
@@ -1356,6 +1505,130 @@ class EPTCrew:
     # ─────────────────────────────────────────────────────────────────────────
     #  Utilities
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _generate_handover(
+        self, deferred_text: str, amend_text: str, signoff_log: str, user_info: str
+    ) -> None:
+        """Generate Handover.md — comprehensive project delivery document."""
+        penny = AgentRoster.PENNY
+        task = HANDOVER_TASK.format(
+            feature=self.feature,
+            user_info=user_info,
+            full_context=self.board.full_context_header(),
+            approved_summary=self.board.approved_summary(),
+            signoff_log=signoff_log,
+            deferred_issues=deferred_text,
+            amendments=amend_text,
+            integration_verdict=self.board.integration_verdict,
+        )
+        self.board.emit(EventType.WRITING, "penny", "Writing Handover document...")
+        self.ui.flush_events()
+        self._set_memory("penny")
+        resp = penny.think(self.board, task, HANDOVER_SYSTEM, self.client, max_tokens=6000)
+        self._clear_memory()
+        self.board.handover_doc = resp
+        handover_path = self.board.docs_dir / "Handover.md"
+        atomic_write(handover_path, resp)
+        self.board.emit(EventType.WRITING, "penny", f"Handover saved: {handover_path}")
+        self.ui.flush_events()
+
+    def _generate_packaging_artifacts(self) -> None:
+        """Generate stack-aware packaging files (pyproject.toml, README, Makefile, etc.)."""
+        penny = AgentRoster.PENNY
+
+        # Detect stack from research context
+        stack = "generic"
+        if self.board.research:
+            lang = getattr(self.board.research, "language", "") or ""
+            framework = getattr(self.board.research, "framework", "") or ""
+            combined = f"{lang} {framework}".lower()
+            if "python" in combined:
+                stack = "Python"
+            elif "node" in combined or "javascript" in combined or "typescript" in combined:
+                stack = "Node.js"
+            elif "go" in combined or "golang" in combined:
+                stack = "Go"
+
+        # Extract import lines from source files for dep detection
+        import_lines: list[str] = []
+        for entry in self.board.registry.values():
+            if entry.approved and entry.code:
+                for line in entry.code.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("import ") or stripped.startswith("from ") or \
+                       stripped.startswith("require(") or stripped.startswith("import {"):
+                        import_lines.append(stripped)
+        source_imports = "\n".join(sorted(set(import_lines)))[:3000]
+
+        # Derive kebab-case project name from feature
+        import re as _re
+        project_name = _re.sub(r"[^\w\s-]", "", self.feature.lower())
+        project_name = _re.sub(r"[\s_]+", "-", project_name.strip())[:40].strip("-")
+
+        arch_lines = self.board.architecture.splitlines()
+        architecture_summary = "\n".join(arch_lines[:30])
+
+        task = PACKAGING_TASK.format(
+            feature=self.feature,
+            stack=stack,
+            project_name=project_name,
+            source_imports=source_imports,
+            approved_summary=self.board.approved_summary(),
+            architecture_summary=architecture_summary,
+        )
+        self.board.emit(EventType.WRITING, "penny",
+                        f"Generating {stack} packaging artifacts...")
+        self.ui.flush_events()
+        self._set_memory("penny")
+        resp = penny.think(self.board, task, PACKAGING_SYSTEM, self.client, max_tokens=6000)
+        self._clear_memory()
+
+        # Parse and write each artifact from fenced blocks
+        artifact_count = 0
+        for match in re.finditer(
+            r"```filename:\s*(\S+)\s*\n(.*?)```", resp, re.DOTALL
+        ):
+            filename = match.group(1).strip()
+            content = match.group(2)
+            artifact_path = self.board.src_dir / filename
+            atomic_write(artifact_path, content)
+            self.board.emit(EventType.WRITING, "penny", f"Artifact saved: {artifact_path}")
+            artifact_count += 1
+
+        if artifact_count == 0:
+            # Fallback: save the raw response as packaging_notes.md
+            fallback = self.board.docs_dir / "packaging_notes.md"
+            atomic_write(fallback, resp)
+            self.board.emit(EventType.WRITING, "penny", f"Packaging notes saved: {fallback}")
+
+        self.ui.flush_events()
+
+    def _generate_delivery_checklist(self, deferred_text: str, user_info: str) -> None:
+        """Morgan runs the final delivery checklist and project summary."""
+        dm = AgentRoster.DM
+
+        # Build list of docs that were generated
+        docs_list = "\n".join(
+            f"- {p.name} ({p.stat().st_size // 1024} KB)"
+            for p in sorted(self.board.docs_dir.glob("*.md"))
+        ) or "(none)"
+
+        task = DM_TASK.format(
+            feature=self.feature,
+            user_info=user_info,
+            full_context=self.board.full_context_header(),
+            approved_summary=self.board.approved_summary(),
+            deferred_issues=deferred_text,
+            integration_verdict=self.board.integration_verdict,
+            docs_list=docs_list,
+        )
+        self.board.emit(EventType.WRITING, "dm", "Running final delivery checklist...")
+        self.ui.flush_events()
+        resp = dm.think(self.board, task, DM_SYSTEM, self.client, max_tokens=4096)
+        checklist_path = self.board.docs_dir / "delivery_checklist.md"
+        atomic_write(checklist_path, resp)
+        self.board.emit(EventType.WRITING, "dm", f"Delivery checklist saved: {checklist_path}")
+        self.ui.flush_events()
 
     def _save(self) -> None:
         """Save a checkpoint + logbook + knowledge base + memories."""
