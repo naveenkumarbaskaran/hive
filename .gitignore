@@ -37,3 +37,12 @@ projects/
 
 # Archive of old experiments
 archive/
+
+# Secrets & credentials — NEVER commit
+.env
+.env.*
+*.pem
+*.key
+service_key*.json
+*secret*
+*credentials*

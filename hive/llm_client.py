@@ -133,6 +133,8 @@ class LLMClient:
         self.model_big = model_big or os.getenv("LLM_MODEL_BIG", "") or self.default_model
         self.model_small = model_small or os.getenv("LLM_MODEL_SMALL", "") or self.default_model
         self._format: str | None = api_format or os.getenv("LLM_FORMAT", "").lower() or None
+        if self._format == "auto":
+            self._format = None  # auto = run detection
         self._anthropic_client: Any = None  # lazy-loaded SDK client
 
     # ── Public API ────────────────────────────────────────────────────────────

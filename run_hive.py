@@ -17,7 +17,28 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load .env file from project root if it exists (no dependencies)."""
+    env_path = Path(__file__).resolve().parent / ".env"
+    if not env_path.is_file():
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip()
+            if not os.environ.get(key):  # don't override existing env vars
+                os.environ[key] = value
+
+
+_load_dotenv()
 
 from hive.llm_client import llm
 from hive.crew import EPTCrew
