@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Read any file in the repository",
+      "Edit files in hive/, tests/, run_hive.py",
+      "Run: make test",
+      "Run: make lint",
+      "Run: make fmt",
+      "Run: python3 -m pytest*",
+      "Run: ruff check*",
+      "Run: ruff format*",
+      "Run: pip install*",
+      "Run: python3 -c*",
+      "Run: git status",
+      "Run: git diff*",
+      "Run: git log*",
+      "Run: git add*",
+      "Run: git commit*"
+    ],
+    "deny": [
+      "Run: rm -rf /",
+      "Run: git push --force",
+      "Access files outside the repository"
+    ]
+  }
+}
