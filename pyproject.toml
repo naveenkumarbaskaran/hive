@@ -48,6 +48,9 @@ Issues = "https://github.com/naveenkumarbaskaran/hive/issues"
 
 # ── Tool configuration ──────────────────────────────────────────────────────
 
+[tool.hatch.build.targets.wheel]
+packages = ["hive", "run_hive.py"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
