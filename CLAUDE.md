@@ -113,6 +113,7 @@ ruff format hive/ tests/ run_hive.py
 | `LLM_MODEL_BIG` | same as `LLM_MODEL` | For POWERFUL tier |
 | `LLM_MODEL_SMALL` | same as `LLM_MODEL` | For FAST tier |
 | `LLM_FORMAT` | `auto` | Force: `anthropic`, `openai`, or `auto` |
+| `LLM_FALLBACK_MODELS` | (none) | Comma-separated fallback models for 429 rotation |
 | `HIVE_LOG_LEVEL` | `WARNING` | Log level: DEBUG, INFO, WARNING, ERROR |
 | `HIVE_MIN_DISK_MB` | `50` | Min free disk before saves |
 | `HIVE_PROJECTS_DIR` | `./projects` | Where projects are saved |
