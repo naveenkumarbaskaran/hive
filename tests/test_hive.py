@@ -1872,5 +1872,199 @@ class TestCrewMemory:
         assert crew.board.memory_context == ""
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Rate-limit retry queue tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRateLimitCascadeDetection:
+    """Tests for EPTCrew._is_rate_limit_cascade."""
+
+    def test_detects_httpx_429(self):
+        exc = MagicMock(spec=Exception)
+        exc.response = MagicMock()
+        exc.response.status_code = 429
+        assert EPTCrew._is_rate_limit_cascade(exc) is True
+
+    def test_detects_string_429(self):
+        exc = RuntimeError("HTTPStatusError: 429 rate limited")
+        assert EPTCrew._is_rate_limit_cascade(exc) is True
+
+    def test_rejects_non_429(self):
+        exc = RuntimeError("server error 500")
+        assert EPTCrew._is_rate_limit_cascade(exc) is False
+
+    def test_no_false_positive_on_port(self):
+        exc = RuntimeError("connection refused on port 4290")
+        assert EPTCrew._is_rate_limit_cascade(exc) is False
+
+    def test_no_false_positive_on_ticket(self):
+        exc = RuntimeError("see ticket #4291 for details")
+        assert EPTCrew._is_rate_limit_cascade(exc) is False
+
+
+class TestRetryRateLimitedFiles:
+    """Tests for the rate-limit retry queue in _phase_build."""
+
+    def test_retry_recovers_file(self, tmp_path, monkeypatch):
+        """A rate-limited file that succeeds on retry should be approved."""
+        monkeypatch.setenv("HIVE_RATE_LIMIT_COOLDOWN", "0")  # no wait in tests
+        monkeypatch.setattr("hive.state.PROJECTS_DIR", tmp_path)
+        crew = EPTCrew("test feature", auto_approve=True)
+        crew.board.project_slug = "test"
+        crew.board.current_phase = "build"
+        crew.board.init_project()
+
+        # Set up file plan
+        crew.board.file_plan = ["app.py"]
+        crew.board.dep_graph = {"app.py": []}
+        crew.board.contract = ""
+        crew.board.registry["app.py"] = FileEntry(name="app.py")
+
+        build_call_count = 0
+
+        def mock_build_file(fname):
+            nonlocal build_call_count
+            build_call_count += 1
+            if build_call_count == 1:
+                raise RuntimeError("HTTPStatusError: 429 rate limited")
+            # Second attempt succeeds
+            entry = crew.board.registry[fname]
+            entry.approved = True
+            entry.code = "print('hello')"
+            return True
+
+        monkeypatch.setattr(crew, "_build_file", mock_build_file)
+        monkeypatch.setattr(crew, "_save", lambda: None)
+
+        crew._phase_build()
+
+        assert crew.board.registry["app.py"].approved is True
+        assert build_call_count == 2  # first failed, second succeeded
+
+    def test_retry_still_fails_sets_skip_reason(self, tmp_path, monkeypatch):
+        """A file that fails retry too gets a clear skip_reason."""
+        monkeypatch.setenv("HIVE_RATE_LIMIT_COOLDOWN", "0")
+        monkeypatch.setattr("hive.state.PROJECTS_DIR", tmp_path)
+        crew = EPTCrew("test feature", auto_approve=True)
+        crew.board.project_slug = "test"
+        crew.board.current_phase = "build"
+        crew.board.init_project()
+
+        crew.board.file_plan = ["app.py"]
+        crew.board.dep_graph = {"app.py": []}
+        crew.board.contract = ""
+        crew.board.registry["app.py"] = FileEntry(name="app.py")
+
+        def mock_build_file(fname):
+            raise RuntimeError("HTTPStatusError: 429 rate limited")
+
+        monkeypatch.setattr(crew, "_build_file", mock_build_file)
+        monkeypatch.setattr(crew, "_save", lambda: None)
+
+        crew._phase_build()
+
+        entry = crew.board.registry["app.py"]
+        assert entry.approved is False
+        assert "rate-limit" in entry.skip_reason.lower()
+        assert "resume" in entry.skip_reason.lower()
+
+    def test_non_429_error_not_queued_for_retry(self, tmp_path, monkeypatch):
+        """Non-rate-limit errors are NOT queued for retry."""
+        monkeypatch.setenv("HIVE_RATE_LIMIT_COOLDOWN", "0")
+        monkeypatch.setattr("hive.state.PROJECTS_DIR", tmp_path)
+        crew = EPTCrew("test feature", auto_approve=True)
+        crew.board.project_slug = "test"
+        crew.board.current_phase = "build"
+        crew.board.init_project()
+
+        crew.board.file_plan = ["app.py"]
+        crew.board.dep_graph = {"app.py": []}
+        crew.board.contract = ""
+        crew.board.registry["app.py"] = FileEntry(name="app.py")
+
+        build_call_count = 0
+
+        def mock_build_file(fname):
+            nonlocal build_call_count
+            build_call_count += 1
+            raise RuntimeError("server error 500")
+
+        monkeypatch.setattr(crew, "_build_file", mock_build_file)
+        monkeypatch.setattr(crew, "_save", lambda: None)
+
+        crew._phase_build()
+
+        # Should only be called once — no retry for non-429 errors
+        assert build_call_count == 1
+        assert crew.board.registry["app.py"].approved is False
+
+
+class TestSingleModelPoolWarning:
+    """Tests for the single-model pool warning in LLMClient."""
+
+    def test_single_model_pool_warns(self, monkeypatch, capsys):
+        """When pool has only 1 model, a warning is printed."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("LLM_BASE_URL", "http://localhost:9999")
+        monkeypatch.setenv("LLM_FORMAT", "openai")
+        monkeypatch.delenv("LLM_FALLBACK_MODELS", raising=False)
+        monkeypatch.delenv("LLM_MODEL_BIG", raising=False)
+        monkeypatch.delenv("LLM_MODEL_SMALL", raising=False)
+        client = LLMClient()
+        # Reset the warning flag in case it was set by a previous test
+        client._single_model_warned = False
+
+        # The pool will have 1 model — should warn on first chat()
+        ok_resp = LLMResponse(text="ok", model="test-model")
+        client._chat_openai = MagicMock(return_value=ok_resp)
+
+        with patch("hive.llm_client.time.sleep"):
+            client.chat(system="s", messages=[{"role": "user", "content": "hi"}])
+
+        captured = capsys.readouterr()
+        assert "Single-model pool" in captured.out or "single-model" in captured.out.lower()
+
+    def test_multi_model_pool_no_warning(self, monkeypatch, capsys):
+        """When pool has multiple models, no warning is printed."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("LLM_BASE_URL", "http://localhost:9999")
+        monkeypatch.setenv("LLM_FORMAT", "openai")
+        monkeypatch.setenv("LLM_FALLBACK_MODELS", "fallback-model-1,fallback-model-2")
+        client = LLMClient()
+        client._single_model_warned = False
+
+        ok_resp = LLMResponse(text="ok", model="test-model")
+        client._chat_openai = MagicMock(return_value=ok_resp)
+
+        with patch("hive.llm_client.time.sleep"):
+            client.chat(system="s", messages=[{"role": "user", "content": "hi"}])
+
+        captured = capsys.readouterr()
+        assert "Single-model pool" not in captured.out
+
+
+class TestUIDroppedFiles:
+    """Tests for prominent display of rate-limited dropped files."""
+
+    def test_final_summary_shows_dropped_files(self, capsys):
+        board = Blackboard(feature="test")
+        board.registry["app.py"] = FileEntry(
+            name="app.py", approved=True, code="x", assigned_dev="Dexter",
+        )
+        board.registry["test_app.py"] = FileEntry(
+            name="test_app.py", approved=False,
+            skip_reason="Rate-limit cascade: LLM unavailable after retry "
+                        "(recoverable — resume with --resume)",
+        )
+        ui = TerminalUI(board, verbose=False)
+        ui.final_summary()
+
+        captured = capsys.readouterr()
+        assert "DROPPED" in captured.out
+        assert "test_app.py" in captured.out
+        assert "rate-limit" in captured.out.lower() or "Rate-limit" in captured.out
+        assert "resume" in captured.out.lower()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -236,6 +236,15 @@ class LLMClient:
         # Build a rotation pool for 429 rate-limit scenarios
         model_pool = self._build_model_pool(original_model)
         rate_limited_models: set[str] = set()
+        if len(model_pool) <= 1 and not getattr(self, '_single_model_warned', False):
+            self._single_model_warned = True
+            logger.warning(
+                "Model pool has only 1 model (%s). "
+                "Set LLM_FALLBACK_MODELS for 429 rotation.",
+                model_pool[0] if model_pool else "none",
+            )
+            print("  [LLM] ⚠️ Single-model pool — 429 rotation disabled. "
+                  "Set LLM_FALLBACK_MODELS for resilience.")
 
         for attempt in range(1, retries + 1):
             try:
@@ -292,7 +301,9 @@ class LLMClient:
                     else:
                         # All models in pool are rate-limited — reset and wait longer
                         rate_limited_models.clear()
-                        wait = _backoff_wait(attempt, base=2.0, max_wait=30.0)
+                        # Longer base when pool is single-model (no rotation benefit)
+                        base = 3.0 if len(model_pool) <= 1 else 2.0
+                        wait = _backoff_wait(attempt, base=base, max_wait=45.0)
                         logger.info("All models rate-limited, resetting pool and waiting %.1fs", wait)
                         print(f"  [LLM fallback] all models rate-limited, waiting {wait:.1f}s before retrying")
                 else:

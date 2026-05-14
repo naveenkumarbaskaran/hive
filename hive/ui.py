@@ -638,16 +638,20 @@ class TerminalUI:
     def file_status(self, filename: str, status: str, detail: str = "") -> None:
         """Show file-level status during build."""
         status_colors = {
-            "building":  C.YELLOW,
-            "reviewing": C.CYAN,
-            "approved":  C.GREEN,
-            "failed":    C.RED,
-            "skipped":   C.DIM,
-            "revising":  C.MAGENTA,
+            "building":    C.YELLOW,
+            "reviewing":   C.CYAN,
+            "approved":    C.GREEN,
+            "failed":      C.RED,
+            "skipped":     C.DIM,
+            "revising":    C.MAGENTA,
+            "rate-limited": C.RED,
+            "retrying":    C.YELLOW,
+            "dropped":     C.RED,
         }
         color = status_colors.get(status, C.WHITE)
         icon = {"building": "🔨", "reviewing": "🔎", "approved": "✅",
-                "failed": "❌", "skipped": "⏭️", "revising": "🔄"}.get(status, "•")
+                "failed": "❌", "skipped": "⏭️", "revising": "🔄",
+                "rate-limited": "⚠️", "retrying": "🔁", "dropped": "🚨"}.get(status, "•")
         line = f"  {icon} {filename:30} {colored(status.upper(), color, C.BOLD)}"
         if detail:
             line += f"  {colored(detail, C.DIM)}"
@@ -682,6 +686,8 @@ class TerminalUI:
         # Files
         approved = [e for e in b.registry.values() if e.approved]
         skipped = [e for e in b.registry.values() if e.skip_reason]
+        rate_limited = [e for e in skipped if "rate-limit" in (e.skip_reason or "").lower()]
+        other_skipped = [e for e in skipped if e not in rate_limited]
         total = len(b.registry)
         print(colored(f"  📦 Files: {len(approved)}/{total} approved", C.GREEN, C.BOLD)
               + (f", {len(skipped)} skipped" if skipped else ""))
@@ -690,7 +696,23 @@ class TerminalUI:
             dev_note = f" (by {e.assigned_dev})" if e.assigned_dev else ""
             deferred_note = f" [{len(e.deferred_issues)} deferred]" if e.deferred_issues else ""
             print(f"    ✅ {e.name}{dev_note}{deferred_note}")
-        for e in skipped:
+
+        # Surface rate-limited drops prominently
+        if rate_limited:
+            print()
+            print(colored(
+                f"  🚨 DROPPED ({len(rate_limited)} file(s) — rate-limit cascade):",
+                C.RED, C.BOLD,
+            ))
+            for e in rate_limited:
+                print(colored(f"    ❌ {e.name}: {e.skip_reason}", C.RED))
+            print(colored(
+                "    💡 Recoverable — resume with: "
+                "hive --resume <project>/checkpoints/board_latest.json",
+                C.YELLOW,
+            ))
+
+        for e in other_skipped:
             print(colored(f"    ⏭️  {e.name}: {e.skip_reason}", C.DIM))
 
         # Knowledge base

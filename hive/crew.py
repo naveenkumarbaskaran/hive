@@ -918,6 +918,74 @@ class EPTCrew:
     #  Phase 8: Build — parallel dev agents by dependency layers
     # ─────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_rate_limit_cascade(exc: Exception) -> bool:
+        """Check if an exception is a 429 rate-limit cascade from the LLM client."""
+        # httpx.HTTPStatusError with 429 status code
+        if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
+            return exc.response.status_code == 429
+        # Stringified 429 from proxies (word boundary to avoid false positives)
+        return bool(re.search(r'\b429\b', str(exc)[:200]))
+
+    def _retry_rate_limited_files(
+        self, rate_limited_files: list[str], total_files: int, completed: int,
+    ) -> None:
+        """Retry files that failed due to 429 rate-limit cascades.
+
+        Waits for a cooldown period, then retries each file sequentially
+        (gentle on the API). Files that still fail get a clear skip_reason
+        so the delivery summary surfaces them prominently.
+        """
+        cooldown = int(os.environ.get("HIVE_RATE_LIMIT_COOLDOWN", "30"))
+        count = len(rate_limited_files)
+        self.board.emit(
+            EventType.LLM_INCIDENT, "system",
+            f"⚠️ {count} file(s) hit rate-limit cascade — "
+            f"waiting {cooldown}s before retry: {', '.join(rate_limited_files)}",
+        )
+        self.ui.flush_events()
+        print(f"  ⏳ Rate-limit cooldown: waiting {cooldown}s before retrying "
+              f"{count} file(s)...")
+        time.sleep(cooldown)
+
+        still_failed: list[str] = []
+        for fname in rate_limited_files:
+            self.ui.file_status(fname, "retrying", "rate-limit recovery")
+            try:
+                success = self._build_file(fname)
+            except Exception as exc:
+                logger.error("Retry failed for %s: %s", fname, exc)
+                success = False
+
+            if success:
+                self.ui.file_status(fname, "approved", "(recovered after cooldown)")
+                self.board.emit(
+                    EventType.VERDICT, "system",
+                    f"✅ {fname} recovered after rate-limit retry",
+                    target=fname,
+                )
+            else:
+                still_failed.append(fname)
+                entry = self.board.registry.get(fname)
+                if entry:
+                    entry.skip_reason = (
+                        "Rate-limit cascade: LLM unavailable after retry "
+                        "(recoverable — resume with --resume)"
+                    )
+                self.ui.file_status(fname, "dropped", "rate-limit — LLM unavailable")
+                self.board.emit(
+                    EventType.ERROR, "system",
+                    f"❌ {fname} dropped: rate-limit cascade persisted after retry",
+                    target=fname,
+                )
+
+        if still_failed:
+            print(f"  ⚠️  {len(still_failed)} file(s) could not be recovered: "
+                  f"{', '.join(still_failed)}")
+            print(f"  💡 Resume later with: hive --resume "
+                  f"{self.board.project_root}/checkpoints/board_latest.json")
+        self.ui.flush_events()
+
     def _phase_build(self) -> None:
         self.board.current_phase = "build"
         self.ui.phase_header("Build")
@@ -932,6 +1000,7 @@ class EPTCrew:
         layers = self.board.dep_layers()
         total_files = len(self.board.file_plan)
         completed = 0
+        rate_limited_files: list[str] = []  # files that failed due to 429 cascade
 
         for layer_idx, layer in enumerate(layers):
             self.board.emit(EventType.PHASE_START, "system",
@@ -951,7 +1020,19 @@ class EPTCrew:
                     if existing and existing.approved:
                         self.ui.file_status(fname, "approved", "(from checkpoint)")
                         continue
-                    success = self._build_file(fname)
+                    try:
+                        success = self._build_file(fname)
+                    except Exception as exc:
+                        logger.error("Error building %s: %s", fname, exc)
+                        if self._is_rate_limit_cascade(exc):
+                            rate_limited_files.append(fname)
+                            self.ui.file_status(fname, "rate-limited",
+                                                "429 cascade — queued for retry")
+                            self.board.emit(
+                                EventType.LLM_INCIDENT, "system",
+                                f"⚠️ {fname}: rate-limit cascade, queued for retry")
+                            continue
+                        success = False
                     if success:
                         self.ui.file_status(fname, "approved")
                     else:
@@ -975,6 +1056,14 @@ class EPTCrew:
                         try:
                             success = future.result()
                         except Exception as exc:
+                            if self._is_rate_limit_cascade(exc):
+                                rate_limited_files.append(fname)
+                                self.ui.file_status(fname, "rate-limited",
+                                                    "429 cascade — queued for retry")
+                                self.board.emit(
+                                    EventType.LLM_INCIDENT, "system",
+                                    f"⚠️ {fname}: rate-limit cascade, queued for retry")
+                                continue
                             logger.error("Unhandled error building %s: %s", fname, exc)
                             success = False
                         if success:
@@ -983,6 +1072,10 @@ class EPTCrew:
                             self.ui.file_status(fname, "failed", "exceeded max revisions")
 
             self._save()  # checkpoint after each layer
+
+        # ── Retry pass for rate-limited files ──────────────────────────────
+        if rate_limited_files:
+            self._retry_rate_limited_files(rate_limited_files, total_files, completed)
 
         self._contract_cache = {}  # free memory
         self.board.completed_phases.append("build")
