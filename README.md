@@ -1,25 +1,13 @@
-<p align="center">
-  <strong>🐝 Hive</strong>
-  <br>
-  <em>Collective Intelligence Building Software</em>
-</p>
+# 🐝 Hive
 
-<p align="center">
-  <a href="#quickstart">Quickstart</a> •
-  <a href="#how-it-works">How It Works</a> •
-  <a href="#the-crew">The Crew</a> •
-  <a href="#cli-reference">CLI Reference</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="ARCHITECTURE.md">Architecture</a> •
-  <a href="CONTRIBUTING.md">Contributing</a>
-</p>
+**Collective Intelligence Building Software**
 
-<p align="center">
-  <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-green">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-286%20passing-brightgreen">
-  <img alt="Dependencies" src="https://img.shields.io/badge/deps-1%20(httpx)-orange">
-</p>
+[Quickstart](#quickstart) • [How It Works](#how-it-works) • [The Crew](#the-crew) • [CLI Reference](#cli-reference) • [Configuration](#configuration) • [Architecture](ARCHITECTURE.md) • [Contributing](CONTRIBUTING.md)
+
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-Apache%202.0-green)
+![Tests](https://img.shields.io/badge/tests-286%20passing-brightgreen)
+![Dependencies](https://img.shields.io/badge/deps-1%20(httpx)-orange)
 
 ---
 
