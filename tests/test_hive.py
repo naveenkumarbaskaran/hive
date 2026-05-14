@@ -872,6 +872,118 @@ class TestModelPoolAndFallback:
         exc = _httpx.HTTPStatusError("server error", request=req, response=resp)
         assert LLMClient._is_rate_limit_error(exc) is False
 
+    def test_is_rate_limit_error_no_false_positive_on_port(self):
+        """Port numbers like 4290 should not trigger false positive."""
+        exc = RuntimeError("Connection refused on port 4290")
+        assert LLMClient._is_rate_limit_error(exc) is False
+
+    def test_is_rate_limit_error_no_false_positive_on_id(self):
+        """Ticket IDs like #4291 should not trigger false positive."""
+        exc = RuntimeError("See issue #4291 for details")
+        assert LLMClient._is_rate_limit_error(exc) is False
+
+
+class TestChatRetryLoop:
+    """Integration tests for chat() retry logic with mocked transport."""
+
+    def _make_client(self, fallbacks: list[str] | None = None) -> LLMClient:
+        client = LLMClient(
+            base_url="http://fake", api_key="k",
+            default_model="model-a", model_big="model-b", model_small="model-c",
+            api_format="openai",
+        )
+        if fallbacks:
+            client.fallback_models = fallbacks
+        return client
+
+    @staticmethod
+    def _make_429(url: str = "http://fake/v1/chat/completions"):
+        import httpx as _httpx
+        req = _httpx.Request("POST", url)
+        resp = _httpx.Response(429, request=req)
+        return _httpx.HTTPStatusError("429 rate limited", request=req, response=resp)
+
+    def test_429_rotates_model_and_succeeds(self):
+        """On 429, chat() switches to next model in pool and succeeds."""
+        client = self._make_client()
+        ok_resp = LLMResponse(text="ok", model="model-b")
+
+        call_count = 0
+        models_tried: list[str] = []
+
+        original_openai = client._chat_openai
+
+        def mock_openai(system, messages, model, temperature, max_tokens):
+            nonlocal call_count
+            call_count += 1
+            models_tried.append(model)
+            if call_count == 1:
+                raise TestChatRetryLoop._make_429()
+            return ok_resp
+
+        client._chat_openai = mock_openai
+
+        with patch("hive.llm_client.time.sleep"):
+            resp = client.chat(system="s", messages=[{"role": "user", "content": "hi"}],
+                               tier=ModelTier.BALANCED, retries=3)
+
+        assert resp.text == "ok"
+        assert resp.model_switched is True
+        assert resp.retries == 1
+        # First call should be model-a (BALANCED), second should be different
+        assert models_tried[0] == "model-a"
+        assert models_tried[1] != "model-a"
+
+    def test_429_exhausts_pool_then_resets(self):
+        """When all models are 429'd, pool resets and retries from the start."""
+        client = self._make_client()
+        ok_resp = LLMResponse(text="ok", model="model-a")
+
+        call_count = 0
+
+        def mock_openai(system, messages, model, temperature, max_tokens):
+            nonlocal call_count
+            call_count += 1
+            # Fail first 3 (one per pool model), succeed on 4th
+            if call_count <= 3:
+                raise TestChatRetryLoop._make_429()
+            return ok_resp
+
+        client._chat_openai = mock_openai
+
+        with patch("hive.llm_client.time.sleep"):
+            resp = client.chat(system="s", messages=[{"role": "user", "content": "hi"}],
+                               tier=ModelTier.BALANCED, retries=5)
+
+        assert resp.text == "ok"
+        assert resp.retries == 3  # 3 failures before success
+        assert resp.model_switched is True
+
+    def test_non_429_does_not_rotate_model(self):
+        """Non-rate-limit errors use existing backoff/escalation, not model rotation."""
+        client = self._make_client()
+        ok_resp = LLMResponse(text="ok", model="model-a")
+
+        call_count = 0
+        models_tried: list[str] = []
+
+        def mock_openai(system, messages, model, temperature, max_tokens):
+            nonlocal call_count
+            call_count += 1
+            models_tried.append(model)
+            if call_count == 1:
+                raise RuntimeError("server error 500")
+            return ok_resp
+
+        client._chat_openai = mock_openai
+
+        with patch("hive.llm_client.time.sleep"):
+            resp = client.chat(system="s", messages=[{"role": "user", "content": "hi"}],
+                               tier=ModelTier.BALANCED, retries=3)
+
+        assert resp.text == "ok"
+        assert resp.model_switched is False
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Connector Tests

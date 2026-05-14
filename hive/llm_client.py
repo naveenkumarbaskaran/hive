@@ -45,11 +45,12 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -175,8 +176,9 @@ class LLMClient:
         """Check if an exception is a 429 rate-limit error."""
         if isinstance(exc, httpx.HTTPStatusError):
             return exc.response.status_code == 429
-        # Also catch stringified 429 from proxies
-        return "429" in str(exc)[:50]
+        # Also catch stringified 429 from proxies — word boundary avoids
+        # false positives on port numbers like 4290 or ticket IDs like #4291.
+        return bool(re.search(r'\b429\b', str(exc)[:80]))
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -205,13 +207,17 @@ class LLMClient:
 
         Retry strategy (up to `retries` attempts):
           1. Try with the requested tier/model.
-          2. On failure: log the error, wait with backoff.
-          3. After first failure: if thinking was enabled, retry without it.
-          4. After second failure: escalate tier (FAST→BALANCED→POWERFUL).
-          5. If all retries exhausted: raise with full error history.
+          2. On 429 rate-limit: immediately rotate to the next model in the
+             pool (tier models + LLM_FALLBACK_MODELS) with minimal backoff.
+             When all pool models are exhausted, reset and wait longer.
+          3. On other failures: log the error, wait with exponential backoff.
+          4. After first non-429 failure: if thinking was enabled, retry without it.
+          5. After second non-429 failure: escalate tier (FAST→BALANCED→POWERFUL).
+          6. If all retries exhausted: raise with full error history.
 
         The returned LLMResponse includes resilience metadata:
-          retries, tier_escalated, thinking_stripped, errors, duration_s.
+          retries, tier_escalated, thinking_stripped, model_switched,
+          model_used, errors, duration_s.
         """
         t0 = time.time()
         fmt = self._detect_format()
@@ -306,7 +312,10 @@ class LLMClient:
                     elif current_tier != ModelTier.POWERFUL and attempt >= 2:
                         prev_tier = current_tier
                         current_tier = current_tier.escalate()
-                        current_model = self.resolve_model(current_tier)
+                        escalated_model = self.resolve_model(current_tier)
+                        # Only switch if the escalated model isn't already rate-limited
+                        if escalated_model not in rate_limited_models:
+                            current_model = escalated_model
                         tier_escalated = True
                         logger.info("Escalating tier %s→%s (model: %s)",
                                    prev_tier.value, current_tier.value, current_model)
