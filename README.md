@@ -1,5 +1,6 @@
 <p align="center">
-  <strong>🐝 Hive</strong><br>
+  <strong>🐝 Hive</strong>
+  <br>
   <em>Collective Intelligence Building Software</em>
 </p>
 
