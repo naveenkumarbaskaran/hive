@@ -21,6 +21,7 @@ import random
 import re
 import shutil
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -64,8 +65,8 @@ def atomic_write(path: Path | str, content: str) -> None:
 def file_lock(path: Path | str, *, timeout: float = 30.0):
     """Advisory file lock using fcntl.flock.
 
-    Uses a .lock file adjacent to the target. Blocks until the lock is
-    acquired. Automatically released on exit.
+    Uses a .lock file adjacent to the target. Blocks up to `timeout`
+    seconds, then raises TimeoutError. Automatically released on exit.
     """
     path = Path(path)
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -73,7 +74,24 @@ def file_lock(path: Path | str, *, timeout: float = 30.0):
 
     fp = open(lock_path, "w")
     try:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        # Try non-blocking first; if that fails, poll up to timeout
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            deadline = time.time() + timeout
+            acquired = False
+            while time.time() < deadline:
+                try:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except (BlockingIOError, OSError):
+                    time.sleep(0.1)
+            if not acquired:
+                fp.close()
+                raise TimeoutError(
+                    f"Could not acquire lock on {lock_path} within {timeout}s"
+                ) from None
         yield
     finally:
         fcntl.flock(fp.fileno(), fcntl.LOCK_UN)

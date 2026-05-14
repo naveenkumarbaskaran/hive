@@ -238,7 +238,7 @@ class SignOff:
 PROJECTS_DIR = Path(os.environ.get("HIVE_PROJECTS_DIR", "./projects"))
 
 # Maximum events kept in memory (older events are trimmed)
-_MAX_EVENTS = 1000
+_MAX_EVENTS = int(os.environ.get("HIVE_MAX_EVENTS", "1000"))
 
 
 @dataclass
@@ -647,8 +647,8 @@ def save_checkpoint(board: Blackboard) -> Path:
 
 def load_checkpoint(path: str) -> Blackboard:
     """Load a blackboard from a checkpoint file with schema validation."""
-    with open(path) as f:
-        d = json.load(f)
+    p = Path(path)
+    d = json.loads(p.read_text(encoding="utf-8"))
 
     # Validate and add defaults for missing fields
     d.pop("_schema_version", None)

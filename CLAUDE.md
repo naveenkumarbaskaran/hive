@@ -7,8 +7,8 @@
 ## What is Hive?
 
 Hive is a **multi-agent SDLC framework** where named AI agents (Scout, Penny,
-Archie, Quinn, Judge, Pixel, Flow, Alex, Devs) collaborate through a shared
-Blackboard to turn a feature request into production-ready code.
+Archie, Quinn, Judge, Pixel, Flow, Alex, Morgan, Devs, Reviewers) collaborate
+through a shared Blackboard to turn a feature request into production-ready code.
 
 **EPT = Empowered Product Team** — the conceptual name for the agent crew.
 The Python package is `hive`, the CLI command is `hive`.
@@ -37,7 +37,7 @@ hive/                     ← repo root
 │   ├── __init__.py       ← exports + __version__
 │   ├── agents.py         ← Agent dataclass, AgentRoster, DEV_POOL
 │   ├── connectors.py     ← KnowledgeItem, ConnectorRegistry, git repo ingest
-│   ├── crew.py           ← EPTCrew: 12-phase orchestrator (largest file ~1440 lines)
+│   ├── crew.py           ← EPTCrew: 13-phase orchestrator (largest file ~1740 lines)
 │   ├── hardening.py      ← atomic_write, file_lock, sanitize, budget, disk checks
 │   ├── llm_client.py     ← LLMClient, ModelTier, auto-detect backend, retry+escalate
 │   ├── memory.py         ← 3-tier memory: Agent → Team → Global
@@ -47,7 +47,7 @@ hive/                     ← repo root
 ├── run_hive.py           ← CLI entry point (argparse)
 ├── llm_client.py         ← backward-compat shim → hive/llm_client.py
 ├── tests/
-│   ├── test_hive.py      ← ~278 unit tests (NO real LLM calls)
+│   ├── test_hive.py      ← ~300 unit tests (NO real LLM calls)
 │   └── test_hardening.py ← hardening + integration tests
 ├── projects/             ← runtime output (gitignored)
 ├── pyproject.toml        ← package config, scripts, tool settings
@@ -77,17 +77,17 @@ ruff format hive/ tests/ run_hive.py
 
 ## Architecture at a Glance
 
-**12-phase pipeline** in `hive/crew.py`:
+**13-phase pipeline** in `hive/crew.py`:
 1. Welcome/Intake → 2. Knowledge Ingest → 3. Research (Scout) →
 4. Interview (Penny+Flow) → 5. PRD (Penny) → 6. Feasibility (Archie) →
 7. Architecture+Contract (Archie) → 8. Ratification (Penny) →
 9. Crew Assembly → 10. Build (Devs, layered) → 11. Integration (Quinn) →
-12. Release (Penny)
+12. Test Docs (UAT+SIT) → 13. Release (Penny+Morgan)
 
 **Key patterns:**
 - **Blackboard** (`hive/state.py`): single shared state, all agents read/write
 - **ModelTier** (`hive/llm_client.py`): FAST / BALANCED / POWERFUL — agents request capability, not model names
-- **Resilient LLM** (`hive/llm_client.py`): 3-attempt retry with tier escalation
+- **Resilient LLM** (`hive/llm_client.py`): 5-attempt retry with tier escalation + 429 model rotation
 - **Event bus**: agents emit Events, UI renders them (decoupled)
 - **Dep-layered build**: topological sort of file deps → parallel layers
 - **Memory** (`hive/memory.py`): 3-tier learning (agent → team → global)
@@ -117,6 +117,10 @@ ruff format hive/ tests/ run_hive.py
 | `HIVE_LOG_LEVEL` | `WARNING` | Log level: DEBUG, INFO, WARNING, ERROR |
 | `HIVE_MIN_DISK_MB` | `50` | Min free disk before saves |
 | `HIVE_PROJECTS_DIR` | `./projects` | Where projects are saved |
+| `HIVE_LLM_TIMEOUT` | `120` | HTTP timeout (seconds) for LLM requests |
+| `HIVE_MAX_REVISIONS` | `3` | Max code revision cycles per file |
+| `HIVE_MAX_EVENTS` | `1000` | Max events kept in Blackboard memory |
+| `HIVE_MAX_GLOBAL_MEMORY` | `100` | Max global memory entries retained |
 
 ## Common Tasks for Claude
 

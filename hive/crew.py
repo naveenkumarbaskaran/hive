@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -214,7 +215,7 @@ class EPTCrew:
         crew.run()
     """
 
-    MAX_REVISIONS = 3
+    MAX_REVISIONS = int(os.environ.get("HIVE_MAX_REVISIONS", "3"))
 
     def __init__(
         self,
@@ -937,13 +938,10 @@ class EPTCrew:
                             f"Build layer {layer_idx + 1}/{len(layers)}: {', '.join(layer)}")
             self.ui.flush_events()
 
-        for layer_idx, layer in enumerate(layers):
-            self.board.emit(EventType.PHASE_START, "system",
-                            f"Build layer {layer_idx + 1}/{len(layers)}: {', '.join(layer)}")
-            self.ui.flush_events()
-
             # Files in the same dep layer have no inter-dependencies — build in parallel
-            max_workers = min(len(layer), 4)
+            # Adaptive: scale workers to CPU count, capped at layer size
+            cpu_limit = os.cpu_count() or 4
+            max_workers = min(len(layer), cpu_limit)
             if max_workers == 1:
                 # Single file in layer — skip thread overhead
                 for fname in layer:
@@ -1561,9 +1559,8 @@ class EPTCrew:
         source_imports = "\n".join(sorted(set(import_lines)))[:3000]
 
         # Derive kebab-case project name from feature
-        import re as _re
-        project_name = _re.sub(r"[^\w\s-]", "", self.feature.lower())
-        project_name = _re.sub(r"[\s_]+", "-", project_name.strip())[:40].strip("-")
+        project_name = re.sub(r"[^\w\s-]", "", self.feature.lower())
+        project_name = re.sub(r"[\s_]+", "-", project_name.strip())[:40].strip("-")
 
         arch_lines = self.board.architecture.splitlines()
         architecture_summary = "\n".join(arch_lines[:30])

@@ -54,13 +54,9 @@ from typing import Any
 
 import httpx
 
+from hive.hardening import backoff_wait as _backoff_wait
+
 logger = logging.getLogger("hive.llm")
-
-
-def _backoff_wait(attempt: int, base: float = 1.0, max_wait: float = 60.0) -> float:
-    """Exponential backoff with full jitter (avoids circular import with ept.hardening)."""
-    ceiling = min(base * (2 ** attempt), max_wait)
-    return random.uniform(0.5, ceiling)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,6 +133,7 @@ class LLMClient:
         self.model_big = model_big or os.getenv("LLM_MODEL_BIG", "") or self.default_model
         self.model_small = model_small or os.getenv("LLM_MODEL_SMALL", "") or self.default_model
         self.fallback_models: list[str] = self._parse_fallback_models()
+        self.http_timeout: int = int(os.getenv("HIVE_LLM_TIMEOUT", "120"))
         self._format: str | None = api_format or os.getenv("LLM_FORMAT", "").lower() or None
         if self._format == "auto":
             self._format = None  # auto = run detection
@@ -416,10 +413,11 @@ class LLMClient:
         try:
             cache_file = Path.home() / ".ept" / "format_cache.json"
             cache_file.parent.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text(json.dumps({
-                "base_url": self.base_url,
-                "format": self._format,
-            }))
+            # Write atomically via temp-file + rename
+            content = json.dumps({"base_url": self.base_url, "format": self._format})
+            tmp = str(cache_file) + ".tmp"
+            Path(tmp).write_text(content)
+            os.replace(tmp, cache_file)
         except Exception:
             pass  # non-critical, just an optimization
 
@@ -494,7 +492,7 @@ class LLMClient:
             f"{self.base_url}{path_prefix}/v1/messages",
             headers=headers,
             json=payload,
-            timeout=120,
+            timeout=self.http_timeout,
         )
 
         # If 400 with thinking enabled, retry without it (proxy may not support it)
@@ -506,7 +504,7 @@ class LLMClient:
                 f"{self.base_url}{path_prefix}/v1/messages",
                 headers=headers,
                 json=payload,
-                timeout=120,
+                timeout=self.http_timeout,
             )
 
         if resp.status_code != 200:
@@ -571,7 +569,7 @@ class LLMClient:
             f"{self.base_url}/v1/chat/completions",
             headers=headers,
             json=payload,
-            timeout=120,
+            timeout=self.http_timeout,
         )
         resp.raise_for_status()
         data = resp.json()

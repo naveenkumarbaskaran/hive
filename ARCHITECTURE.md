@@ -137,7 +137,7 @@ Agent.think()  ──►  LLMClient.chat()  ──►  Backend
   + LLM_INCIDENT event  on LLMResponse          (text, tokens)
 ```
 
-**Retry strategy** (configurable, default 3 attempts):
+**Retry strategy** (configurable, default 5 attempts):
 - **429 rate-limit**: immediately rotate to the next model in the pool
   (`LLM_FALLBACK_MODELS` + tier models), with short 0.5–2s backoff.
   When the entire pool is exhausted, it resets and waits longer before retrying.

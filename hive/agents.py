@@ -8,7 +8,6 @@ conversation history — the Blackboard is the single source of truth.
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass, field
 from typing import Any
 

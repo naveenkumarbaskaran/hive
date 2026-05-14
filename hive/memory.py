@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -433,10 +434,10 @@ class MemoryManager:
             new_lessons.append(lesson)
 
         # 3. Cap global memory to avoid unbounded growth
-        MAX_GLOBAL = 100
-        if len(self.global_memory.lessons) > MAX_GLOBAL:
+        _max_global = int(os.environ.get("HIVE_MAX_GLOBAL_MEMORY", "100"))
+        if len(self.global_memory.lessons) > _max_global:
             # Keep the most recent
-            self.global_memory.lessons = self.global_memory.lessons[-MAX_GLOBAL:]
+            self.global_memory.lessons = self.global_memory.lessons[-_max_global:]
 
         return new_lessons
 

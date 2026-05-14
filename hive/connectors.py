@@ -378,6 +378,9 @@ class ConnectorRegistry:
         """
         for ext in extensions:
             _EXT_MAP[ext] = ctype
+        # Future: store processor for custom file parsing (PDF, protobuf, etc.)
+        if processor is not None:
+            logger.info("Custom processor registered for %s (not yet wired)", extensions)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
