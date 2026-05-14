@@ -7,11 +7,11 @@
 *                       @naveenkumarbaskaran
 
 # Core framework
-/ept/                   @naveenkumarbaskaran
-/run_ept.py             @naveenkumarbaskaran
+/hive/                   @naveenkumarbaskaran
+/run_hive.py             @naveenkumarbaskaran
 
 # LLM integration
-/ept/llm_client.py      @naveenkumarbaskaran
+/hive/llm_client.py      @naveenkumarbaskaran
 
 # Tests
 /tests/                 @naveenkumarbaskaran
@@ -22,4 +22,4 @@
 
 # Security-sensitive
 /SECURITY.md            @naveenkumarbaskaran
-/ept/hardening.py       @naveenkumarbaskaran
+/hive/hardening.py       @naveenkumarbaskaran

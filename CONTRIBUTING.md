@@ -20,7 +20,7 @@ make test
 
 ```
 hive/
-├── ept/                  # Core package
+├── hive/                  # Core package
 │   ├── __init__.py       #   Package exports + version
 │   ├── llm_client.py     #   Pluggable LLM connector
 │   ├── agents.py         #   Agent definitions + personalities
@@ -32,9 +32,9 @@ hive/
 │   ├── memory.py         #   3-tier learning memory
 │   └── hardening.py      #   Production utilities
 ├── tests/                # Test suite
-│   ├── test_ept.py       #   Core functionality tests
+│   ├── test_hive.py       #   Core functionality tests
 │   └── test_hardening.py #   Hardening & safety tests
-├── run_ept.py            # CLI entry point
+├── run_hive.py            # CLI entry point
 ├── ARCHITECTURE.md       # Detailed architecture docs
 └── pyproject.toml        # Package configuration
 ```
@@ -47,10 +47,10 @@ hive/
    ```
 
 2. **Write code** following existing patterns:
-   - Place agent logic in `ept/agents.py`
-   - Place prompt templates in `ept/prompts.py`
-   - Place state/data structures in `ept/state.py`
-   - Use `ept/hardening.py` utilities for file I/O
+   - Place agent logic in `hive/agents.py`
+   - Place prompt templates in `hive/prompts.py`
+   - Place state/data structures in `hive/state.py`
+   - Use `hive/hardening.py` utilities for file I/O
 
 3. **Add tests** in `tests/`:
    - Tests must not make real LLM API calls
@@ -75,15 +75,15 @@ hive/
 
 ## Adding a New Agent
 
-1. Define the agent in `ept/agents.py` (add to `AGENT_ROSTER`)
-2. Add system + task prompts in `ept/prompts.py`
-3. Add the phase logic in `ept/crew.py`
-4. Add color + emoji in `ept/ui.py`
+1. Define the agent in `hive/agents.py` (add to `AGENT_ROSTER`)
+2. Add system + task prompts in `hive/prompts.py`
+3. Add the phase logic in `hive/crew.py`
+4. Add color + emoji in `hive/ui.py`
 5. Write tests covering the new phase
 
 ## Adding a New Connector
 
-1. Add the connector type to `ConnectorType` enum in `ept/connectors.py`
+1. Add the connector type to `ConnectorType` enum in `hive/connectors.py`
 2. Implement the ingestion function
 3. Register it in `ConnectorRegistry`
 4. Add tests

@@ -14,20 +14,20 @@ test: ## Run test suite
 	python3 -m pytest tests/ -v --tb=short
 
 test-cov: ## Run tests with coverage
-	python3 -m pytest tests/ --cov=ept --cov-report=term-missing
+	python3 -m pytest tests/ --cov=hive --cov-report=term-missing
 
 lint: ## Run ruff linter
-	ruff check ept/ tests/ run_ept.py
+	ruff check hive/ tests/ run_hive.py
 
 fmt: ## Auto-format with ruff
-	ruff format ept/ tests/ run_ept.py
+	ruff format hive/ tests/ run_hive.py
 
 clean: ## Remove build artifacts
-	rm -rf __pycache__ ept/__pycache__ tests/__pycache__ .pytest_cache
+	rm -rf __pycache__ hive/__pycache__ tests/__pycache__ .pytest_cache
 	rm -rf dist/ build/ *.egg-info
 
 run: ## Run Hive (use FEATURE="..." to pass a feature request)
-	python3 run_ept.py $(FEATURE)
+	python3 run_hive.py $(FEATURE)
 
 version: ## Show version
-	python3 -c "from ept import __version__; print(__version__)"
+	python3 -c "from hive import __version__; print(__version__)"

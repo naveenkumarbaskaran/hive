@@ -38,13 +38,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from ept.connectors import KnowledgeItem, knowledge_for_agent as _knowledge_for_agent
-from ept.hardening import (
+from hive.connectors import KnowledgeItem, knowledge_for_agent as _knowledge_for_agent
+from hive.hardening import (
     atomic_write, sanitize_filename, validate_checkpoint_data,
     check_disk_space, CHECKPOINT_SCHEMA_VERSION,
 )
 
-logger = logging.getLogger("ept.state")
+logger = logging.getLogger("hive.state")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,7 +235,7 @@ class SignOff:
 #  Blackboard — the shared state
 # ─────────────────────────────────────────────────────────────────────────────
 
-PROJECTS_DIR = Path(os.environ.get("EPT_PROJECTS_DIR", "./projects"))
+PROJECTS_DIR = Path(os.environ.get("HIVE_PROJECTS_DIR", "./projects"))
 
 # Maximum events kept in memory (older events are trimmed)
 _MAX_EVENTS = 1000
@@ -567,7 +567,7 @@ class Blackboard:
         return ""
 
     def full_context_header(self) -> str:
-        from ept.hardening import budget_context, estimate_tokens
+        from hive.hardening import budget_context, estimate_tokens
         sections = []
         if self.user_profile:
             sections.append(("user_profile", self.user_profile.as_block(), 1))

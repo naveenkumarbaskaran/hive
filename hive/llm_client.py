@@ -52,7 +52,7 @@ from typing import Any, Optional
 
 import httpx
 
-logger = logging.getLogger("ept.llm")
+logger = logging.getLogger("hive.llm")
 
 
 def _backoff_wait(attempt: int, base: float = 1.0, max_wait: float = 60.0) -> float:

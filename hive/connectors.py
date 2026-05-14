@@ -27,9 +27,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from ept.hardening import register_temp_path
+from hive.hardening import register_temp_path
 
-logger = logging.getLogger("ept.connectors")
+logger = logging.getLogger("hive.connectors")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -502,7 +502,7 @@ def clone_repo(url: str, target_dir: Path | None = None, depth: int = 1) -> Path
         # Extract a name from the URL for the temp folder
         name = url.rstrip("/").rsplit("/", 1)[-1]
         name = name.removesuffix(".git")
-        target_dir = Path(tempfile.mkdtemp(prefix=f"ept_repo_{name}_"))
+        target_dir = Path(tempfile.mkdtemp(prefix=f"hive_repo_{name}_"))
         # Register for cleanup on process exit
         register_temp_path(target_dir)
         logger.debug("Clone temp dir registered for cleanup: %s", target_dir)

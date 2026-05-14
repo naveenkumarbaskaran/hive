@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ept.hardening import (
+from hive.hardening import (
     atomic_write,
     file_lock,
     sanitize_filename,
@@ -465,7 +465,7 @@ class TestEventCapping:
     """Test that events list is capped to prevent OOM."""
 
     def test_events_capped(self):
-        from ept.state import Blackboard, EventType, _MAX_EVENTS
+        from hive.state import Blackboard, EventType, _MAX_EVENTS
         board = Blackboard(feature="test")
         # Emit more than max
         for i in range(_MAX_EVENTS + 500):
@@ -473,7 +473,7 @@ class TestEventCapping:
         assert len(board.events) == _MAX_EVENTS
 
     def test_cap_preserves_recent(self):
-        from ept.state import Blackboard, EventType, _MAX_EVENTS
+        from hive.state import Blackboard, EventType, _MAX_EVENTS
         board = Blackboard(feature="test")
         for i in range(_MAX_EVENTS + 100):
             board.emit(EventType.THINKING, "test", f"event {i}")
@@ -489,7 +489,7 @@ class TestContextBudgeting:
     """Test that full_context_header respects token budget."""
 
     def test_context_header_produces_string(self):
-        from ept.state import Blackboard, ResearchContext
+        from hive.state import Blackboard, ResearchContext
         board = Blackboard(feature="test")
         board.research = ResearchContext(domain="test")
         board.prd = "PRD content"
@@ -509,7 +509,7 @@ class TestAtomicWriteIntegration:
 
     def test_save_checkpoint_atomic(self, tmp_path):
         """save_checkpoint should create files atomically (no .tmp leftovers)."""
-        from ept.state import Blackboard, save_checkpoint, PROJECTS_DIR
+        from hive.state import Blackboard, save_checkpoint, PROJECTS_DIR
         with patch.object(
             type(PROJECTS_DIR), '__fspath__',
             return_value=str(tmp_path),
@@ -524,7 +524,7 @@ class TestAtomicWriteIntegration:
         (board_root / "docs").mkdir(parents=True, exist_ok=True)
 
         # Monkey-patch the board's PROJECTS_DIR for this test
-        import ept.state as state_mod
+        import hive.state as state_mod
         old_dir = state_mod.PROJECTS_DIR
         state_mod.PROJECTS_DIR = tmp_path
         try:
@@ -553,8 +553,8 @@ class TestFilenameSanitizationIntegration:
     """Test that save_source_file sanitizes LLM-generated filenames."""
 
     def test_traversal_blocked(self, tmp_path):
-        from ept.state import Blackboard, FileEntry
-        import ept.state as state_mod
+        from hive.state import Blackboard, FileEntry
+        import hive.state as state_mod
         old_dir = state_mod.PROJECTS_DIR
         state_mod.PROJECTS_DIR = tmp_path
         try:
@@ -585,7 +585,7 @@ class TestLoggingSetup:
         setup_logging("WARNING")
 
     def test_setup_with_env_var(self):
-        with patch.dict(os.environ, {"EPT_LOG_LEVEL": "DEBUG"}):
+        with patch.dict(os.environ, {"HIVE_LOG_LEVEL": "DEBUG"}):
             setup_logging()
 
     def test_setup_invalid_level(self):
@@ -602,13 +602,13 @@ class TestLLMClientBackoff:
 
     def test_backoff_imported(self):
         """LLM client has its own backoff function."""
-        from ept.llm_client import _backoff_wait
+        from hive.llm_client import _backoff_wait
         assert callable(_backoff_wait)
 
     def test_default_retries_is_five(self):
         """Default retries should be 5 (not 3)."""
         import inspect
-        from ept.llm_client import LLMClient
+        from hive.llm_client import LLMClient
         sig = inspect.signature(LLMClient.chat)
         default = sig.parameters["retries"].default
         assert default == 5
@@ -623,47 +623,47 @@ class TestCheckDiskSpace:
 
     def test_returns_positive_free_mb(self, tmp_path):
         """Running on a real filesystem should report positive free space."""
-        from ept.hardening import check_disk_space
+        from hive.hardening import check_disk_space
         free = check_disk_space(tmp_path, min_mb=1)
         assert isinstance(free, int) and free > 0
 
     def test_raises_when_below_threshold(self, tmp_path):
         """Should raise DiskSpaceError when free < min_mb."""
-        from ept.hardening import check_disk_space, DiskSpaceError
+        from hive.hardening import check_disk_space, DiskSpaceError
         # Request an absurdly large threshold so any disk will fail
         with pytest.raises(DiskSpaceError, match="Insufficient disk space"):
             check_disk_space(tmp_path, min_mb=999_999_999)
 
     def test_walks_up_to_existing_parent(self, tmp_path):
         """If path doesn't exist, the check uses the nearest existing parent."""
-        from ept.hardening import check_disk_space
+        from hive.hardening import check_disk_space
         deep = tmp_path / "a" / "b" / "c" / "d.json"
         free = check_disk_space(deep, min_mb=1)
         assert free > 0
 
     def test_env_var_default(self, monkeypatch, tmp_path):
-        """MIN_DISK_MB should be overridable via EPT_MIN_DISK_MB env var."""
+        """MIN_DISK_MB should be overridable via HIVE_MIN_DISK_MB env var."""
         # Importing again inside a fresh monkeypatch scope
-        monkeypatch.setenv("EPT_MIN_DISK_MB", "999999999")
+        monkeypatch.setenv("HIVE_MIN_DISK_MB", "999999999")
         # Need to reload the module so the module-level constant picks it up
-        import importlib, ept.hardening
-        importlib.reload(ept.hardening)
-        from ept.hardening import check_disk_space, DiskSpaceError
+        import importlib, hive.hardening
+        importlib.reload(hive.hardening)
+        from hive.hardening import check_disk_space, DiskSpaceError
         with pytest.raises(DiskSpaceError):
             check_disk_space(tmp_path)
         # Restore
-        monkeypatch.delenv("EPT_MIN_DISK_MB")
-        importlib.reload(ept.hardening)
+        monkeypatch.delenv("HIVE_MIN_DISK_MB")
+        importlib.reload(hive.hardening)
 
     def test_fail_open_on_os_error(self, tmp_path, monkeypatch):
         """If shutil.disk_usage raises, check_disk_space should return -1."""
         import shutil as _shutil
-        from ept.hardening import check_disk_space
+        from hive.hardening import check_disk_space
         monkeypatch.setattr(_shutil, "disk_usage", lambda _: (_ for _ in ()).throw(OSError("mocked")))
         result = check_disk_space(tmp_path, min_mb=1)
         assert result == -1
 
     def test_disk_space_error_is_os_error(self):
         """DiskSpaceError should be a subclass of OSError."""
-        from ept.hardening import DiskSpaceError
+        from hive.hardening import DiskSpaceError
         assert issubclass(DiskSpaceError, OSError)

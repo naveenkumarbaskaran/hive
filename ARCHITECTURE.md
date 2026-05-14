@@ -11,13 +11,13 @@ and structured prompts.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        run_ept.py (CLI)                         │
+│                        run_hive.py (CLI)                         │
 │                     argparse + entry point                      │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     ept/crew.py (Orchestrator)                  │
+│                     hive/crew.py (Orchestrator)                  │
 │                                                                 │
 │  Phase 0: Welcome/Intake (name, role, end-user, as-is)          │
 │      │                                                          │
@@ -41,7 +41,7 @@ and structured prompts.
          │                       │                 │
          ▼                       ▼                 ▼
 ┌─────────────┐    ┌──────────────────┐    ┌──────────────┐
-│ ept/agents  │    │   ept/state      │    │  ept/ui      │
+│ hive/agents  │    │   hive/state      │    │  hive/ui      │
 │             │    │  (Blackboard)    │    │ (Terminal)   │
 │ Scout  🔍   │    │                  │    │              │
 │ Penny  📋   │◄──►│  Research ctx    │───►│  Events      │
@@ -75,16 +75,16 @@ and structured prompts.
 | File | Lines | Purpose |
 |------|-------|---------|
 | `llm_client.py` | ~490 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + tier escalation. |
-| `ept/__init__.py` | ~20 | Package exports |
-| `ept/connectors.py` | ~570 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest |
-| `ept/memory.py` | ~440 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
-| `ept/state.py` | ~690 | Blackboard, UserProfile, LogEntry, Events, knowledge_base, repo_analysis, memory_context, checkpoint save/load |
-| `ept/agents.py` | ~310 | Agent dataclass with logbook+memory-wired think(), AgentRoster, DEV_POOL |
-| `ept/prompts.py` | ~700 | System prompts + task templates for all 10+ agent roles (with user/knowledge/repo context) |
-| `ept/ui.py` | ~820 | ANSI terminal rendering, welcome intake, knowledge intake, repo clone summary, memory stats, sign-off prompts, logbook summary |
-| `ept/crew.py` | ~1440 | 12-phase orchestrator (welcome→ingest→release), parsers, repo analysis, memory recording, build/review/revise loop |
-| `run_ept.py` | ~100 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo |
-| `test_ept.py` | ~1700 | 206 unit tests (no API calls) |
+| `hive/__init__.py` | ~20 | Package exports |
+| `hive/connectors.py` | ~570 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest |
+| `hive/memory.py` | ~440 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
+| `hive/state.py` | ~690 | Blackboard, UserProfile, LogEntry, Events, knowledge_base, repo_analysis, memory_context, checkpoint save/load |
+| `hive/agents.py` | ~310 | Agent dataclass with logbook+memory-wired think(), AgentRoster, DEV_POOL |
+| `hive/prompts.py` | ~700 | System prompts + task templates for all 10+ agent roles (with user/knowledge/repo context) |
+| `hive/ui.py` | ~820 | ANSI terminal rendering, welcome intake, knowledge intake, repo clone summary, memory stats, sign-off prompts, logbook summary |
+| `hive/crew.py` | ~1440 | 12-phase orchestrator (welcome→ingest→release), parsers, repo analysis, memory recording, build/review/revise loop |
+| `run_hive.py` | ~100 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo |
+| `test_hive.py` | ~1700 | 206 unit tests (no API calls) |
 
 ## Key Design Patterns
 
@@ -297,8 +297,8 @@ reference code, API specs, test cases, and data into the pipeline.
 
 **CLI usage:**
 ```bash
-python3 run_ept.py --attach ./docs/ --attach ./api/swagger.yaml "Build X"
-python3 run_ept.py --repo https://github.com/org/project "Build similar for our use case"
+python3 run_hive.py --attach ./docs/ --attach ./api/swagger.yaml "Build X"
+python3 run_hive.py --repo https://github.com/org/project "Build similar for our use case"
 ```
 Interactive mode also asks for paths during the ingest phase.
 
@@ -462,8 +462,8 @@ Checkpoints serialize the full Blackboard (minus events) to JSON. Resume
 skips completed phases by checking `board.completed_phases`:
 
 ```bash
-python3 run_ept.py --resume projects/my_api/checkpoints/board_latest.json
-python3 run_ept.py --attach ./docs/ --attach ./api/swagger.yaml "Build a payment gateway"
+python3 run_hive.py --resume projects/my_api/checkpoints/board_latest.json
+python3 run_hive.py --attach ./docs/ --attach ./api/swagger.yaml "Build a payment gateway"
 ```
 
 ## Environment Configuration

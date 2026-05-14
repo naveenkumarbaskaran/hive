@@ -77,22 +77,22 @@ export LLM_MODEL=gpt-4o
 
 ```bash
 # Interactive mode (with welcome intake + sign-offs)
-ept "Build a URL shortener REST API with rate limiting"
+hive "Build a URL shortener REST API with rate limiting"
 
 # Auto mode (skip sign-offs — great for testing)
-ept --auto "Build a CLI todo app with SQLite"
+hive --auto "Build a CLI todo app with SQLite"
 
 # Attach existing docs as context
-ept --attach ./api-spec.yaml --attach ./design-doc.md "Build the payment service"
+hive --attach ./api-spec.yaml --attach ./design-doc.md "Build the payment service"
 
 # Study an existing repo and build something similar
-ept --repo https://github.com/user/project "Build something similar for healthcare"
+hive --repo https://github.com/user/project "Build something similar for healthcare"
 
 # Resume from where you left off
-ept --resume projects/my_project/checkpoints/board_latest.json
+hive --resume projects/my_project/checkpoints/board_latest.json
 
 # List all projects
-ept --list-projects
+hive --list-projects
 ```
 
 ## How It Works
@@ -155,7 +155,7 @@ After each project, memories are automatically distilled into compact global les
 ## CLI Reference
 
 ```
-usage: ept [-h] [--resume PATH] [--list-projects] [-v] [--auto]
+usage: hive [-h] [--resume PATH] [--list-projects] [-v] [--auto]
            [--attach PATH] [--repo URL] [--log-level LEVEL] [--version]
            [feature]
 
@@ -180,19 +180,19 @@ options:
 
 ```bash
 # Simple feature
-ept "Build a markdown parser in Rust"
+hive "Build a markdown parser in Rust"
 
 # With external context
-ept --attach ./openapi.yaml "Build a Python SDK for this API"
+hive --attach ./openapi.yaml "Build a Python SDK for this API"
 
 # Study a repo + build
-ept --repo https://github.com/pallets/flask "Build a similar microframework for Go"
+hive --repo https://github.com/pallets/flask "Build a similar microframework for Go"
 
 # Debug mode
-ept --log-level DEBUG --verbose "Build a chat server"
+hive --log-level DEBUG --verbose "Build a chat server"
 
 # CI/CD friendly (no interactive prompts)
-ept --auto "Build a REST API for widgets"
+hive --auto "Build a REST API for widgets"
 ```
 
 ## Configuration
@@ -215,8 +215,8 @@ All configuration is via **environment variables** — no config files to manage
 | `LLM_MODEL_SMALL` | Same as `LLM_MODEL` | Model for light classification tasks |
 | `LLM_FORMAT` | `auto` | Force format: `anthropic`, `openai`, or `auto` |
 | `PROJECTS_DIR` | `./projects` | Where projects are saved |
-| `EPT_MIN_DISK_MB` | `50` | Minimum free disk space before saves |
-| `EPT_LOG_LEVEL` | `WARNING` | Default log level |
+| `HIVE_MIN_DISK_MB` | `50` | Minimum free disk space before saves |
+| `HIVE_LOG_LEVEL` | `WARNING` | Default log level |
 | `NO_COLOR` | — | Disable ANSI colors (any value) |
 
 ### LLM Provider Examples

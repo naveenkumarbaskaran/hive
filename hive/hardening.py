@@ -24,7 +24,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-logger = logging.getLogger("ept")
+logger = logging.getLogger("hive")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ def atomic_write(path: Path | str, content: str) -> None:
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=".ept_")
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=".hive_")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
@@ -330,12 +330,12 @@ def get_cleanup_registry() -> CleanupRegistry:
 def setup_logging(level: str | None = None) -> None:
     """Configure structured logging for EPT.
 
-    Level is read from EPT_LOG_LEVEL env var, or passed directly.
+    Level is read from HIVE_LOG_LEVEL env var, or passed directly.
     Logs go to stderr so they don't mix with UI output on stdout.
     """
     import sys
 
-    level_str = (level or os.environ.get("EPT_LOG_LEVEL", "WARNING")).upper()
+    level_str = (level or os.environ.get("HIVE_LOG_LEVEL", "WARNING")).upper()
     numeric_level = getattr(logging, level_str, logging.WARNING)
 
     handler = logging.StreamHandler(sys.stderr)
@@ -344,7 +344,7 @@ def setup_logging(level: str | None = None) -> None:
         datefmt="%H:%M:%S",
     ))
 
-    root_logger = logging.getLogger("ept")
+    root_logger = logging.getLogger("hive")
     root_logger.setLevel(numeric_level)
     if not root_logger.handlers:
         root_logger.addHandler(handler)
@@ -354,7 +354,7 @@ def setup_logging(level: str | None = None) -> None:
 #  Disk space pre-check
 # ─────────────────────────────────────────────────────────────────────────────
 
-MIN_DISK_MB = int(os.environ.get("EPT_MIN_DISK_MB", "50"))
+MIN_DISK_MB = int(os.environ.get("HIVE_MIN_DISK_MB", "50"))
 
 
 class DiskSpaceError(OSError):
@@ -371,7 +371,7 @@ def check_disk_space(path: Path | str, min_mb: int | None = None) -> int:
         yet, its nearest existing parent is used.
     min_mb : int, optional
         Minimum free megabytes required.  Defaults to ``MIN_DISK_MB`` (env
-        ``EPT_MIN_DISK_MB``, default 50).
+        ``HIVE_MIN_DISK_MB``, default 50).
 
     Returns
     -------

@@ -25,9 +25,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from ept.hardening import atomic_write, file_lock
+from hive.hardening import atomic_write, file_lock
 
-logger = logging.getLogger("ept.memory")
+logger = logging.getLogger("hive.memory")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

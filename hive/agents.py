@@ -12,8 +12,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Any
 
-from ept.llm_client import LLMClient, LLMResponse, ModelTier, llm as _default_llm
-from ept.state import Blackboard, EventType, LogEntry
+from hive.llm_client import LLMClient, LLMResponse, ModelTier, llm as _default_llm
+from hive.state import Blackboard, EventType, LogEntry
 
 
 # ─────────────────────────────────────────────────────────────────────────────

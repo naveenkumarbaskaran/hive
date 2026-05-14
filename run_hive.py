@@ -5,13 +5,13 @@ Hive — Your AI Dev Crew, Assembled
 CLI entry point. Run an AI-powered product team against a feature request.
 
 Usage:
-  ept "Build a rate-limited REST API for user registration"
-  ept --attach ./docs/ --attach ./api/swagger.yaml "Build a payment gateway"
-  ept --repo https://github.com/user/project "Build something similar for X"
-  ept --resume projects/a_rate_limited_rest_api/checkpoints/board_latest.json
-  ept --list-projects
-  ept --verbose "..."
-  ept --auto "..."   # skip sign-offs (for testing)
+  hive "Build a rate-limited REST API for user registration"
+  hive --attach ./docs/ --attach ./api/swagger.yaml "Build a payment gateway"
+  hive --repo https://github.com/user/project "Build something similar for X"
+  hive --resume projects/a_rate_limited_rest_api/checkpoints/board_latest.json
+  hive --list-projects
+  hive --verbose "..."
+  hive --auto "..."   # skip sign-offs (for testing)
 """
 
 from __future__ import annotations
@@ -19,18 +19,18 @@ from __future__ import annotations
 import argparse
 import sys
 
-from ept.llm_client import llm
-from ept.crew import EPTCrew
-from ept.state import list_projects, load_checkpoint
-from ept.memory import MemoryManager
-from ept.hardening import setup_logging
+from hive.llm_client import llm
+from hive.crew import EPTCrew
+from hive.state import list_projects, load_checkpoint
+from hive.memory import MemoryManager
+from hive.hardening import setup_logging
 
 
 def main() -> None:
-    from ept import __version__
+    from hive import __version__
 
     parser = argparse.ArgumentParser(
-        prog="ept",
+        prog="hive",
         description="Hive — Your AI Dev Crew, Assembled",
         epilog="Documentation: https://github.com/naveenkumarbaskaran/hive",
     )
@@ -90,7 +90,7 @@ def main() -> None:
         crew.memory.load()
         # Rehydrate crew agents if the crew phase was already completed
         if "crew" in board.completed_phases:
-            from ept.agents import AgentRoster
+            from hive.agents import AgentRoster
             crew.agents = AgentRoster.compose(
                 has_frontend=board.research.has_frontend,
                 dev_count=board.dev_count or 1,

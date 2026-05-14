@@ -24,18 +24,18 @@ import re
 import time
 from typing import Any
 
-from ept.llm_client import LLMClient, llm as _default_llm
-from ept.state import (
+from hive.llm_client import LLMClient, llm as _default_llm
+from hive.state import (
     Blackboard, EventType, ResearchContext, FileEntry, Issue,
     Amendment, UserProfile, save_checkpoint,
 )
-from ept.agents import Agent, AgentRoster, make_dev_agent
-from ept.connectors import (
+from hive.agents import Agent, AgentRoster, make_dev_agent
+from hive.connectors import (
     ConnectorRegistry, KnowledgeItem, ConnectorType,
     knowledge_for_agent, knowledge_context as _knowledge_context,
     format_size, is_git_url, ingest_repo,
 )
-from ept.prompts import (
+from hive.prompts import (
     SCOUT_SYSTEM, SCOUT_TASK,
     SCOUT_REPO_ANALYSIS_SYSTEM, SCOUT_REPO_ANALYSIS_TASK,
     PENNY_INTERVIEW_SYSTEM, PENNY_INTERVIEW_TASK,
@@ -52,14 +52,14 @@ from ept.prompts import (
     PENNY_RATIFY_SYSTEM,
     RELEASE_SYSTEM, RELEASE_TASK,
 )
-from ept.ui import TerminalUI
-from ept.memory import MemoryManager
-from ept.hardening import (
+from hive.ui import TerminalUI
+from hive.memory import MemoryManager
+from hive.hardening import (
     validate_code_output, clean_code_fences, atomic_write,
     get_cleanup_registry, check_disk_space,
 )
 
-logger = logging.getLogger("ept.crew")
+logger = logging.getLogger("hive.crew")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

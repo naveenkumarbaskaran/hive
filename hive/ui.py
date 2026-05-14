@@ -17,7 +17,7 @@ import textwrap
 import time
 from typing import Callable
 
-from ept.state import Blackboard, Event, EventType, UserProfile
+from hive.state import Blackboard, Event, EventType, UserProfile
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -367,7 +367,7 @@ class TerminalUI:
 
     def ingest_summary(self, items: list) -> None:
         """Display a summary of ingested knowledge items."""
-        from ept.connectors import format_size
+        from hive.connectors import format_size
 
         w = term_width()
         line = "─" * (w - 4)
@@ -695,7 +695,7 @@ class TerminalUI:
 
         # Knowledge base
         if b.knowledge_base:
-            from ept.connectors import format_size
+            from hive.connectors import format_size
             total_kb_size = sum(i.raw_size for i in b.knowledge_base)
             types = set(i.source_type for i in b.knowledge_base)
             print()

@@ -1,7 +1,7 @@
 """
 EPT Test Suite — No API calls. Tests state, agents, parsing, UI, and pipeline logic.
 
-Run: python -m pytest test_ept.py -v
+Run: python -m pytest test_hive.py -v
 """
 
 from __future__ import annotations
@@ -19,24 +19,24 @@ import pytest
 #  Imports
 # ─────────────────────────────────────────────────────────────────────────────
 
-from ept.state import (
+from hive.state import (
     Blackboard, EventType, Event, ResearchContext, FileEntry, Issue,
     Amendment, SignOff, UserProfile, LogEntry, save_checkpoint, load_checkpoint, PROJECTS_DIR,
 )
-from ept.llm_client import LLMResponse, ModelTier
-from ept.agents import Agent, AgentRoster, make_dev_agent, DEV_POOL
-from ept.connectors import (
+from hive.llm_client import LLMResponse, ModelTier
+from hive.agents import Agent, AgentRoster, make_dev_agent, DEV_POOL
+from hive.connectors import (
     ConnectorType, KnowledgeItem, ConnectorRegistry,
     knowledge_for_agent, knowledge_context, format_size,
     SMALL_THRESHOLD, MEDIUM_THRESHOLD,
     is_git_url, repo_file_tree,
 )
-from ept.crew import (
+from hive.crew import (
     EPTCrew, _parse_json, _parse_contract, _parse_verdict,
     _extract_architecture_text,
 )
-from ept.ui import TerminalUI, agent_color, agent_emoji, C
-from ept.prompts import (
+from hive.ui import TerminalUI, agent_color, agent_emoji, C
+from hive.prompts import (
     SCOUT_SYSTEM, PENNY_PRD_SYSTEM, ARCHIE_SYSTEM,
     QUINN_SYSTEM, DEV_SYSTEM, JUDGE_SYSTEM,
 )
@@ -64,7 +64,7 @@ def board():
 @pytest.fixture
 def board_with_project(board, tmp_path, monkeypatch):
     """Blackboard with project folders created in a temp directory."""
-    import ept.state as state_mod
+    import hive.state as state_mod
     monkeypatch.setattr(state_mod, "PROJECTS_DIR", tmp_path / "projects")
     board.init_project()
     return board
@@ -1340,7 +1340,7 @@ class TestRepoKnowledgeItemTagging:
 class TestRepoPrompts:
 
     def test_scout_repo_analysis_prompts_exist(self):
-        from ept.prompts import SCOUT_REPO_ANALYSIS_SYSTEM, SCOUT_REPO_ANALYSIS_TASK
+        from hive.prompts import SCOUT_REPO_ANALYSIS_SYSTEM, SCOUT_REPO_ANALYSIS_TASK
         assert "reverse-engineer" in SCOUT_REPO_ANALYSIS_SYSTEM.lower() or \
                "repo" in SCOUT_REPO_ANALYSIS_SYSTEM.lower()
         assert "{repo_tree}" in SCOUT_REPO_ANALYSIS_TASK
@@ -1348,15 +1348,15 @@ class TestRepoPrompts:
         assert "{feature}" in SCOUT_REPO_ANALYSIS_TASK
 
     def test_scout_task_has_repo_context_placeholder(self):
-        from ept.prompts import SCOUT_TASK
+        from hive.prompts import SCOUT_TASK
         assert "{repo_context}" in SCOUT_TASK
 
     def test_penny_interview_has_repo_context(self):
-        from ept.prompts import PENNY_INTERVIEW_TASK
+        from hive.prompts import PENNY_INTERVIEW_TASK
         assert "{repo_context}" in PENNY_INTERVIEW_TASK
 
     def test_penny_prd_has_repo_context(self):
-        from ept.prompts import PENNY_PRD_TASK
+        from hive.prompts import PENNY_PRD_TASK
         assert "{repo_context}" in PENNY_PRD_TASK
 
 
@@ -1364,7 +1364,7 @@ class TestRepoPrompts:
 #  Memory: MemoryEntry
 # ─────────────────────────────────────────────────────────────────────────────
 
-from ept.memory import (
+from hive.memory import (
     MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager,
 )
 
