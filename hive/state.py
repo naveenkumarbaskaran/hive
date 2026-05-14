@@ -283,6 +283,11 @@ class Blackboard:
     integration_verdict: str = ""
     release_verdict: str = ""
 
+    # ── Test documentation ──
+    uat_doc: str = ""
+    sit_doc: str = ""
+    handover_doc: str = ""
+
     # ── Active crew ──
     active_agents: list[str] = field(default_factory=list)
     dev_count: int = 1

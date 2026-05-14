@@ -215,6 +215,29 @@ def make_dev_agent(index: int) -> Agent:
     )
 
 
+REVIEWER_POOL = [
+    ("Remy",  "Trust nothing. Verify everything."),
+    ("River", "The contract is the contract."),
+    ("Robin", "Edge cases are just features nobody planned for."),
+    ("Riley", "I read code so the user doesn't have to debug it."),
+]
+
+
+def make_reviewer_agent(index: int) -> Agent:
+    """Create a named sub-reviewer agent for Quinn to delegate to on large builds."""
+    name, tagline = REVIEWER_POOL[index % len(REVIEWER_POOL)]
+    return Agent(
+        id=f"reviewer_{index + 1}",
+        name=name,
+        role="Code Reviewer",
+        emoji="🔎",
+        tagline=tagline,
+        tier=ModelTier.FAST,
+        thinking=False,
+        conditional="dev",
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Agent Roster — all named agents
 # ─────────────────────────────────────────────────────────────────────────────
@@ -274,10 +297,16 @@ class AgentRoster:
         tier=ModelTier.FAST, thinking=False, conditional="frontend",
     )
 
+    DM = Agent(
+        id="dm", name="Morgan", role="Delivery Manager", emoji="📬",
+        tagline="Nothing ships until every box is ticked.",
+        tier=ModelTier.BALANCED, thinking=False, conditional="always",
+    )
+
     @classmethod
     def all_agents(cls) -> list[Agent]:
         return [cls.SCOUT, cls.PENNY, cls.ARCHIE, cls.QUINN, cls.JUDGE,
-                cls.PIXEL, cls.FLOW, cls.ALEX]
+                cls.PIXEL, cls.FLOW, cls.ALEX, cls.DM]
 
     @classmethod
     def compose(cls, has_frontend: bool, dev_count: int = 1) -> dict[str, Agent]:

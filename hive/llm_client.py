@@ -35,6 +35,7 @@ Environment variables:
   LLM_MODEL_BIG   — model for heavy reasoning (default: same as LLM_MODEL)
   LLM_MODEL_SMALL — model for light tasks (default: same as LLM_MODEL)
   LLM_FORMAT      — force format: "anthropic" | "openai" | "auto" (default: auto)
+  LLM_FALLBACK_MODELS — comma-separated fallback models for 429 rotation
 """
 
 from __future__ import annotations
@@ -100,6 +101,8 @@ class LLMResponse:
     retries: int = 0                   # how many retries before success
     tier_escalated: bool = False       # was tier bumped?
     thinking_stripped: bool = False     # was thinking removed on fallback?
+    model_switched: bool = False       # was model switched due to rate limit?
+    model_used: str = ""               # actual model used (may differ from requested)
     errors: list[str] = field(default_factory=list)  # error msgs from failed attempts
     duration_s: float = 0.0            # wall-clock seconds
 
@@ -132,10 +135,48 @@ class LLMClient:
         self.default_model = default_model or os.getenv("LLM_MODEL", "claude-sonnet-4-20250514")
         self.model_big = model_big or os.getenv("LLM_MODEL_BIG", "") or self.default_model
         self.model_small = model_small or os.getenv("LLM_MODEL_SMALL", "") or self.default_model
+        self.fallback_models: list[str] = self._parse_fallback_models()
         self._format: str | None = api_format or os.getenv("LLM_FORMAT", "").lower() or None
         if self._format == "auto":
             self._format = None  # auto = run detection
         self._anthropic_client: Any = None  # lazy-loaded SDK client
+
+    # ── Fallback model helpers ─────────────────────────────────────────────────
+
+    def _parse_fallback_models(self) -> list[str]:
+        """Parse LLM_FALLBACK_MODELS env var (comma-separated) into a list."""
+        env_val = os.getenv("LLM_FALLBACK_MODELS", "")
+        if env_val:
+            return [m.strip() for m in env_val.split(",") if m.strip()]
+        return []
+
+    def _build_model_pool(self, primary_model: str) -> list[str]:
+        """Build a de-duplicated ordered list of models for 429 rotation.
+
+        Order: primary → other tier models → explicit fallbacks.
+        """
+        candidates = [
+            primary_model,
+            self.default_model,
+            self.model_big,
+            self.model_small,
+            *self.fallback_models,
+        ]
+        seen: set[str] = set()
+        pool: list[str] = []
+        for m in candidates:
+            if m and m not in seen:
+                seen.add(m)
+                pool.append(m)
+        return pool
+
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        """Check if an exception is a 429 rate-limit error."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code == 429
+        # Also catch stringified 429 from proxies
+        return "429" in str(exc)[:50]
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -187,6 +228,11 @@ class LLMClient:
         errors: list[str] = []
         tier_escalated = False
         thinking_stripped = False
+        model_switched = False
+
+        # Build a rotation pool for 429 rate-limit scenarios
+        model_pool = self._build_model_pool(original_model)
+        rate_limited_models: set[str] = set()
 
         for attempt in range(1, retries + 1):
             try:
@@ -208,8 +254,13 @@ class LLMClient:
                 resp.retries = attempt - 1
                 resp.tier_escalated = tier_escalated
                 resp.thinking_stripped = thinking_stripped
+                resp.model_switched = model_switched
+                resp.model_used = current_model
                 resp.errors = errors
                 resp.duration_s = time.time() - t0
+                if model_switched:
+                    logger.info("Succeeded with fallback model %s (originally %s)",
+                                current_model, original_model)
                 return resp
 
             except Exception as exc:
@@ -221,24 +272,46 @@ class LLMClient:
                     logger.error("LLM all %d retries exhausted. Errors: %s", retries, errors)
                     raise
 
-                wait = _backoff_wait(attempt, base=1.0, max_wait=60.0)
-                print(f"  [LLM retry {attempt}/{retries}] {err_msg}")
+                is_429 = self._is_rate_limit_error(exc)
 
-                # Strategy: first try stripping thinking, then escalate tier
-                if current_thinking and attempt == 1:
-                    current_thinking = None
-                    thinking_stripped = True
-                    logger.info("Stripping thinking param for next attempt")
-                    print(f"  [LLM fallback] stripping thinking param for next attempt")
-                elif current_tier != ModelTier.POWERFUL and attempt >= 2:
-                    prev_tier = current_tier
-                    current_tier = current_tier.escalate()
-                    current_model = self.resolve_model(current_tier)
-                    tier_escalated = True
-                    logger.info("Escalating tier %s→%s (model: %s)",
-                               prev_tier.value, current_tier.value, current_model)
-                    print(f"  [LLM fallback] escalating tier {prev_tier.value}→{current_tier.value} "
-                          f"(model: {current_model})")
+                if is_429:
+                    # ── Rate limit: rotate to next available model immediately ──
+                    rate_limited_models.add(current_model)
+                    available = [m for m in model_pool if m not in rate_limited_models]
+
+                    if available:
+                        current_model = available[0]
+                        model_switched = True
+                        wait = random.uniform(0.5, 2.0)  # short backoff — switching model
+                        logger.info("Rate-limited on %s, switching to %s",
+                                    rate_limited_models, current_model)
+                        print(f"  [LLM fallback] rate-limited, switching to model: {current_model}")
+                    else:
+                        # All models in pool are rate-limited — reset and wait longer
+                        rate_limited_models.clear()
+                        wait = _backoff_wait(attempt, base=2.0, max_wait=30.0)
+                        logger.info("All models rate-limited, resetting pool and waiting %.1fs", wait)
+                        print(f"  [LLM fallback] all models rate-limited, waiting {wait:.1f}s before retrying")
+                else:
+                    # ── Non-rate-limit error: existing strategy ──
+                    wait = _backoff_wait(attempt, base=1.0, max_wait=60.0)
+                    print(f"  [LLM retry {attempt}/{retries}] {err_msg}")
+
+                    # Strategy: first try stripping thinking, then escalate tier
+                    if current_thinking and attempt == 1:
+                        current_thinking = None
+                        thinking_stripped = True
+                        logger.info("Stripping thinking param for next attempt")
+                        print(f"  [LLM fallback] stripping thinking param for next attempt")
+                    elif current_tier != ModelTier.POWERFUL and attempt >= 2:
+                        prev_tier = current_tier
+                        current_tier = current_tier.escalate()
+                        current_model = self.resolve_model(current_tier)
+                        tier_escalated = True
+                        logger.info("Escalating tier %s→%s (model: %s)",
+                                   prev_tier.value, current_tier.value, current_model)
+                        print(f"  [LLM fallback] escalating tier {prev_tier.value}→{current_tier.value} "
+                              f"(model: {current_model})")
 
                 logger.debug("Backing off %.1fs before retry", wait)
                 time.sleep(wait)

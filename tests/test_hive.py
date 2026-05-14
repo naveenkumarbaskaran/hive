@@ -23,7 +23,7 @@ from hive.state import (
     Blackboard, EventType, Event, ResearchContext, FileEntry, Issue,
     Amendment, SignOff, UserProfile, LogEntry, save_checkpoint, load_checkpoint, PROJECTS_DIR,
 )
-from hive.llm_client import LLMResponse, ModelTier
+from hive.llm_client import LLMClient, LLMResponse, ModelTier
 from hive.agents import Agent, AgentRoster, make_dev_agent, DEV_POOL
 from hive.connectors import (
     ConnectorType, KnowledgeItem, ConnectorRegistry,
@@ -264,7 +264,7 @@ class TestAgentRoster:
 
     def test_all_agents_count(self):
         agents = AgentRoster.all_agents()
-        assert len(agents) == 8  # scout, penny, archie, quinn, judge, pixel, flow, alex
+        assert len(agents) == 9  # scout, penny, archie, quinn, judge, pixel, flow, alex, dm (Morgan)
 
     def test_compose_no_frontend(self):
         agents = AgentRoster.compose(has_frontend=False, dev_count=2)
@@ -797,14 +797,80 @@ class TestLLMResponseResilience:
             text="hello", model="m1",
             tier_requested="fast", tier_used="balanced",
             retries=1, tier_escalated=True,
-            thinking_stripped=True, duration_s=3.2,
+            thinking_stripped=True, model_switched=True,
+            model_used="fallback-model", duration_s=3.2,
             errors=["first error"],
         )
         assert resp.tier_escalated
         assert resp.thinking_stripped
+        assert resp.model_switched
+        assert resp.model_used == "fallback-model"
         assert resp.retries == 1
         assert resp.duration_s == 3.2
         assert len(resp.errors) == 1
+
+
+class TestModelPoolAndFallback:
+    """Tests for 429 rate-limit model rotation."""
+
+    def test_build_model_pool_deduplicates(self):
+        """When all tiers resolve to same model, pool has just one entry."""
+        client = LLMClient(
+            base_url="http://fake", api_key="k",
+            default_model="m1", model_big="m1", model_small="m1",
+        )
+        pool = client._build_model_pool("m1")
+        assert pool == ["m1"]
+
+    def test_build_model_pool_includes_all_unique(self):
+        """Pool includes primary + tier models + fallbacks, deduplicated."""
+        client = LLMClient(
+            base_url="http://fake", api_key="k",
+            default_model="balanced", model_big="big", model_small="small",
+        )
+        client.fallback_models = ["fallback-1", "fallback-2"]
+        pool = client._build_model_pool("balanced")
+        assert pool == ["balanced", "big", "small", "fallback-1", "fallback-2"]
+
+    def test_build_model_pool_primary_first(self):
+        """Primary model is always first in the pool."""
+        client = LLMClient(
+            base_url="http://fake", api_key="k",
+            default_model="balanced", model_big="big", model_small="small",
+        )
+        pool = client._build_model_pool("big")
+        assert pool[0] == "big"
+
+    def test_parse_fallback_models_from_env(self, monkeypatch):
+        monkeypatch.setenv("LLM_FALLBACK_MODELS", "model-a, model-b , model-c")
+        client = LLMClient(base_url="http://fake", api_key="k")
+        assert client.fallback_models == ["model-a", "model-b", "model-c"]
+
+    def test_parse_fallback_models_empty(self, monkeypatch):
+        monkeypatch.delenv("LLM_FALLBACK_MODELS", raising=False)
+        client = LLMClient(base_url="http://fake", api_key="k")
+        assert client.fallback_models == []
+
+    def test_is_rate_limit_error_httpx(self):
+        """Detects 429 from httpx.HTTPStatusError."""
+        import httpx as _httpx
+        req = _httpx.Request("POST", "http://fake/v1/messages")
+        resp = _httpx.Response(429, request=req)
+        exc = _httpx.HTTPStatusError("rate limited", request=req, response=resp)
+        assert LLMClient._is_rate_limit_error(exc) is True
+
+    def test_is_rate_limit_error_string(self):
+        """Detects 429 from stringified exceptions."""
+        exc = RuntimeError("429 Too Many Requests")
+        assert LLMClient._is_rate_limit_error(exc) is True
+
+    def test_is_rate_limit_error_non_429(self):
+        """Non-429 errors are not rate limits."""
+        import httpx as _httpx
+        req = _httpx.Request("POST", "http://fake/v1/messages")
+        resp = _httpx.Response(500, request=req)
+        exc = _httpx.HTTPStatusError("server error", request=req, response=resp)
+        assert LLMClient._is_rate_limit_error(exc) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
