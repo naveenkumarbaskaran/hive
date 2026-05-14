@@ -1,0 +1,25 @@
+# Hive — Code Owners
+#
+# These owners are automatically requested for review on pull requests.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: project maintainer owns everything
+*                       @naveenkumarbaskaran
+
+# Core framework
+/ept/                   @naveenkumarbaskaran
+/run_ept.py             @naveenkumarbaskaran
+
+# LLM integration
+/ept/llm_client.py      @naveenkumarbaskaran
+
+# Tests
+/tests/                 @naveenkumarbaskaran
+
+# CI / packaging
+/pyproject.toml         @naveenkumarbaskaran
+/Makefile               @naveenkumarbaskaran
+
+# Security-sensitive
+/SECURITY.md            @naveenkumarbaskaran
+/ept/hardening.py       @naveenkumarbaskaran
