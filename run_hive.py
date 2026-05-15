@@ -67,6 +67,9 @@ def main() -> None:
     parser.add_argument("--repo", action="append", default=[],
                         metavar="URL",
                         help="Clone & study a git repo as reference (repeatable)")
+    parser.add_argument("--plugin", action="append", default=[],
+                        metavar="PATH",
+                        help="Load a plugin module or package (repeatable)")
     parser.add_argument("--log-level", metavar="LEVEL", default=None,
                         help="Log level: DEBUG, INFO, WARNING, ERROR (default: WARNING)")
     parser.add_argument("--version", action="version",
@@ -99,6 +102,7 @@ def main() -> None:
             auto_approve=args.auto,
             attach_paths=args.attach,
             repo_urls=args.repo,
+            plugin_paths=args.plugin or None,
         )
         crew.board = board
         crew.ui.board = board  # sync UI with restored board
@@ -135,6 +139,7 @@ def main() -> None:
         auto_approve=args.auto,
         attach_paths=args.attach,
         repo_urls=args.repo,
+        plugin_paths=args.plugin or None,
     )
     crew.run()
 

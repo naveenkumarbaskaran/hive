@@ -99,17 +99,19 @@ and structured prompts.
 | `hive/prompts.py` | ~1200 | System prompts + task templates for all agent roles including self-reflection, project DNA |
 | `hive/ui.py` | ~1130 | ANSI terminal rendering, sign-off prompts, progress dashboard with live cost, delivery summary |
 | `hive/state.py` | ~740 | Blackboard, UserProfile, LogEntry, Events, adaptive context header, checkpoint save/load |
-| `hive/llm_client.py` | ~635 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + 429 model-pool rotation. |
-| `hive/connectors.py` | ~580 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest |
+| `hive/llm_client.py` | ~635 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + 429 model-pool rotation. Streaming support (on_token callback). |
+| `hive/connectors.py` | ~580 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest, URL fetch |
 | `hive/hardening.py` | ~478 | atomic_write, file_lock, sanitize, budget, disk checks |
 | `hive/memory.py` | ~456 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
 | `hive/sandbox.py` | ~375 | **NEW** Code execution loop: Sandbox, syntax check, import check, test runner, safe subprocess |
 | `hive/agents.py` | ~338 | Agent dataclass with logbook+memory-wired think(), AgentRoster (10 named agents), DEV_POOL, REVIEWER_POOL |
 | `hive/telemetry.py` | ~317 | **NEW** CostTracker, BudgetExceeded, estimate_cost, model_context_window, per-phase PhaseMetrics |
+| `hive/plugins/` | ~660 | **NEW** Optional plugin system: protocols (base.py), discovery+registry (registry.py), 4 example plugins |
 | `hive/__init__.py` | ~44 | Package exports |
-| `run_hive.py` | ~143 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo |
-| `tests/test_hive.py` | ~3230 | 381 unit tests (no API calls) |
-| `tests/test_hardening.py` | ~669 | Hardening + integration tests |
+| `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo, --plugin |
+| `tests/test_hive.py` | ~3230 | ~351 unit tests (no API calls) |
+| `tests/test_hardening.py` | ~669 | ~72 hardening + integration tests |
+| `tests/test_plugins.py` | ~760 | ~92 plugin system tests |
 
 ## Key Design Patterns
 
@@ -313,7 +315,46 @@ LLM prompt: "Analyze the build logbook and extract:
 
 This makes each run contribute to the system's collective intelligence.
 
-### 6g. Rate-Limit Retry & Dropped File Recovery
+### 6g. Streaming LLM Output
+`LLMClient.chat()` accepts an optional `on_token: Callable[[str], None] | None`
+callback. When provided, tokens stream in real-time rather than waiting for
+the full response. All three backends are supported:
+
+- **Anthropic SDK** — native streaming via `client.messages.stream()`
+- **Anthropic HTTP SSE** — `_stream_anthropic_http()` parses Server-Sent Events
+- **OpenAI SSE** — `_stream_openai()` parses `data:` lines from the SSE stream
+
+`Agent.think()` also accepts `on_token`, passing it through to the LLM client.
+This enables real-time progress display in the terminal UI during long generations.
+
+### 6h. URL-based Knowledge Attachment
+`--attach https://...` now fetches remote URLs via httpx. New functions in
+`hive/connectors.py`:
+
+- `is_url(path)` — detects `http://` or `https://` strings
+- `fetch_url(url)` — GETs the URL content via httpx (respects `HIVE_LLM_TIMEOUT`)
+- `_content_type_to_connector(ct)` — maps Content-Type header to ConnectorType
+- `_url_label(url)` — extracts a short label from the URL path
+- `ConnectorRegistry.ingest_url(url)` — orchestrates fetch + type detection + item creation
+
+Auto-detects connector type from URL file extension or response Content-Type
+header. Binary content (images, archives, etc.) is rejected with a warning.
+
+### 6i. Registry-Aware Dev Context
+During the build phase, developers now receive the **full source code of their
+declared dependencies** rather than generic 40-line previews of all approved files.
+
+`EPTCrew._dependency_context(file_entry)` in `hive/crew.py`:
+1. Reads the file's `depends_on` list from the contract
+2. Looks up each dependency in `board.registry`
+3. Assembles their full approved code into a context block
+
+The `DEV_TASK`, `DEV_REVISION_TASK`, and `DEV_SANDBOX_REVISION_TASK` prompt
+templates include a `{dependency_context}` placeholder that receives this
+targeted context. This dramatically improves code quality for files with
+inter-module dependencies.
+
+### 6j. Rate-Limit Retry & Dropped File Recovery
 Files that fail due to 429 rate-limit cascades during build are not silently
 dropped. Instead, they're queued for retry after a cooldown:
 
@@ -335,6 +376,42 @@ backoff base (3.0s instead of default) since model rotation is not possible.
 spawns ephemeral FAST-tier sub-reviewer agents (Remy, River, Robin, Riley) —
 one per file batch. Quinn only re-reviews files that a sub-reviewer FAILed,
 avoiding a single-agent bottleneck on large builds.
+
+### 6k. Plugin System (Optional)
+Hive has a protocol-based plugin architecture (`hive/plugins/`) that allows
+injecting domain knowledge, coding guidelines, external system connectors,
+test data, and lifecycle hooks — all without modifying core modules.
+
+```
+Plugin Discovery (3 sources):
+  1. --plugin ./path/to/plugin.py     (explicit CLI paths)
+  2. HIVE_PLUGINS_DIR directory scan   (default: ./plugins/)
+  3. Python entry points               (hive.plugins group)
+      ↓
+  PluginRegistry ─► auto-detect categories via duck typing
+      ↓
+  During knowledge ingest:
+    KnowledgePlugins → items added to board.knowledge_base
+    GuidelinesPlugins → rules stored in board.plugin_guidelines
+      ↓
+  During each phase:
+    LifecyclePlugins → on_phase_start() / on_phase_end() hooks
+      ↓
+  On demand:
+    SystemPlugins → connect/execute/disconnect (GitHub, Docker, SAP, etc.)
+    TestDataPlugins → generate fixtures, mock data
+```
+
+**Five plugin protocols** (all `@runtime_checkable`, structural typing):
+- `KnowledgePlugin` — domain docs (SAP, Salesforce, industry knowledge)
+- `GuidelinesPlugin` — coding rules, linting config, company standards
+- `SystemPlugin` — external system connectors (GitHub, Docker, JIRA, SAP)
+- `TestDataPlugin` — test fixtures, mock data, seed data generators
+- `LifecyclePlugin` — pre/post hooks for any pipeline phase
+
+**Zero-impact design:** if no plugins are loaded, all plugin code paths are
+no-ops guarded by `if self.plugin_registry`. The core pipeline remains
+completely unchanged.
 
 ### 7. User Welcome & Profile
 Before any AI agent runs, the pipeline collects the user's identity:

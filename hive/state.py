@@ -302,6 +302,9 @@ class Blackboard:
     # ── Knowledge base — ingested external context ──
     knowledge_base: list[KnowledgeItem] = field(default_factory=list)
 
+    # ── Plugin guidelines — optional, injected by plugin system ──
+    plugin_guidelines: str = ""
+
     # ── Logbook — persistent LLM interaction log ──
     logbook: list[LogEntry] = field(default_factory=list)
 
@@ -596,6 +599,10 @@ class Blackboard:
         ij = self.interjections_context()
         if ij:
             sections.append(("interjections", ij, 1))
+        if self.plugin_guidelines:
+            sections.append(
+                ("plugin_guidelines", f"Plugin Guidelines:\n{self.plugin_guidelines}", 2)
+            )
         # Reserve 30% of window for the actual task prompt + output
         context_budget = int(max_tokens * 0.7)
         return budget_context(sections, max_tokens=context_budget)

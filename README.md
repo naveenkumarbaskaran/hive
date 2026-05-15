@@ -6,7 +6,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Tests](https://img.shields.io/badge/tests-381%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-515%20passing-brightgreen)
 ![Dependencies](https://img.shields.io/badge/deps-1%20(httpx)-orange)
 
 ---
@@ -141,6 +141,25 @@ Every generated Python file is **actually executed** before review:
 - Sandbox feedback loops back to the dev for self-correction
 - Configurable: `HIVE_SANDBOX_TIMEOUT=30`, disable with `HIVE_SANDBOX_ENABLED=0`
 
+### Streaming LLM Output
+
+`LLMClient.chat()` accepts an optional `on_token` callback. When provided, tokens stream in real-time from all 3 backends (Anthropic SDK, Anthropic HTTP SSE, OpenAI SSE). `Agent.think()` also supports `on_token` — enabling live progress display during long generations.
+
+### URL-based Knowledge Attachment
+
+`--attach https://...` now fetches remote URLs via httpx:
+- Auto-detects document type from URL extension or Content-Type header
+- Rejects binary content (images, archives)
+- Supports any text resource: API specs, docs, raw source files
+
+```bash
+hive --attach https://example.com/openapi.yaml "Build a client for this API"
+```
+
+### Registry-Aware Dev Context
+
+During build, developers receive the **full source code of their declared dependencies** (not just generic file previews). `_dependency_context()` looks up each file's `depends_on` entries in the registry and assembles targeted context — dramatically improving code quality for inter-module dependencies.
+
 ### Cost Tracking & Budget Guard
 
 Every LLM call is metered with model-specific pricing (15+ models built in):
@@ -185,6 +204,28 @@ Hive has a **3-tier memory system** that makes agents smarter over time:
 | **Global Memory** | Across ALL projects | Distilled lessons that load into every future run |
 
 After each project, memories are automatically distilled into compact global lessons.
+
+## Plugin System (Optional)
+
+Extend Hive with domain-specific knowledge, coding guidelines, external system connectors, test data generators, and lifecycle hooks — all without modifying core code:
+
+```bash
+# Load a plugin
+hive --plugin ./plugins/sap_knowledge.py "Build an SAP integration"
+
+# Multiple plugins
+hive --plugin ./sap.py --plugin ./company_rules.py "Build a REST API"
+```
+
+**Five plugin types** (protocol-based, no inheritance required):
+- **KnowledgePlugin** — inject domain docs (SAP modules, Salesforce objects, industry knowledge)
+- **GuidelinesPlugin** — inject coding rules, linting configs, company standards
+- **SystemPlugin** — connect to GitHub, Docker, JIRA, SAP, databases
+- **TestDataPlugin** — generate fixtures, mock data, seed data
+- **LifecyclePlugin** — run custom logic before/after any pipeline phase
+
+Plugins are auto-discovered from `--plugin` paths, `HIVE_PLUGINS_DIR`, or Python entry points.
+See `hive/plugins/examples/` for working examples.
 
 ## The Crew
 
@@ -257,6 +298,7 @@ options:
   --auto                Auto-approve all sign-offs (for testing / CI)
   --attach PATH         Attach knowledge files/folders (repeatable)
   --repo URL            Clone & study a git repo as reference (repeatable)
+  --plugin PATH         Load a plugin module or package (repeatable)
   --log-level LEVEL     Log level: DEBUG, INFO, WARNING, ERROR
   --version             show program's version number and exit
 ```
@@ -316,6 +358,7 @@ All configuration is via **environment variables** — no config files to manage
 | `HIVE_RATE_LIMIT_COOLDOWN` | `30` | Seconds to wait before retrying rate-limited files |
 | `HIVE_MAX_EVENTS` | `1000` | Max events kept in Blackboard memory |
 | `HIVE_MAX_GLOBAL_MEMORY` | `100` | Max global memory entries retained |
+| `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
 | `NO_COLOR` | — | Disable ANSI colors (any value) |
 
 ### Rate Limit Handling
@@ -370,7 +413,7 @@ make test-cov
 make lint
 ```
 
-381 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, and model fallback — all without making real API calls.
+515 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, and the plugin system — all without making real API calls.
 
 ## Architecture
 

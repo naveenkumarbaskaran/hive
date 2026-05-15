@@ -20,7 +20,7 @@ make test
 
 ```
 hive/
-├── hive/                  # Core package (12 modules)
+├── hive/                  # Core package (12 modules + plugins subpackage)
 │   ├── __init__.py       #   Package exports + version
 │   ├── llm_client.py     #   Pluggable LLM connector
 │   ├── agents.py         #   Agent definitions + personalities
@@ -32,10 +32,15 @@ hive/
 │   ├── memory.py         #   3-tier learning memory
 │   ├── hardening.py      #   Production utilities
 │   ├── sandbox.py        #   Code execution loop (syntax, import, test)
-│   └── telemetry.py      #   Cost tracking, budget enforcement
-├── tests/                # Test suite (~381 tests)
+│   ├── telemetry.py      #   Cost tracking, budget enforcement
+│   └── plugins/          #   Optional plugin system (protocol-based)
+│       ├── base.py       #     5 plugin protocols
+│       ├── registry.py   #     Plugin discovery, loading, lifecycle
+│       └── examples/     #     Example plugins (SAP, guidelines, GitHub, lifecycle)
+├── tests/                # Test suite (~515 tests)
 │   ├── test_hive.py       #   Core functionality tests
-│   └── test_hardening.py #   Hardening & safety tests
+│   ├── test_hardening.py #   Hardening & safety tests
+│   └── test_plugins.py   #   Plugin system tests
 ├── run_hive.py            # CLI entry point
 ├── ARCHITECTURE.md       # Detailed architecture docs
 └── pyproject.toml        # Package configuration
@@ -55,6 +60,10 @@ hive/
    - Use `hive/hardening.py` utilities for file I/O
    - Use `hive/sandbox.py` for code execution validation
    - Use `hive/telemetry.py` for cost tracking integration
+   - Use `on_token` callback in `LLMClient.chat()` for streaming output
+   - Use `_dependency_context()` in `hive/crew.py` when building dev prompts
+   - Use `ConnectorRegistry.ingest_url()` for URL-based attachments
+   - Use `hive/plugins/` for optional plugin-based extensions (never modify core for plugins)
 
 3. **Add tests** in `tests/`:
    - Tests must not make real LLM API calls
@@ -91,6 +100,23 @@ hive/
 2. Implement the ingestion function
 3. Register it in `ConnectorRegistry`
 4. Add tests
+
+**URL-based connectors:** `--attach https://...` fetches remote URLs automatically.
+See `is_url()`, `fetch_url()`, and `ConnectorRegistry.ingest_url()` in `hive/connectors.py`.
+New URL logic auto-detects type from extension or Content-Type header.
+
+## Adding a Plugin
+
+1. Create a Python file with a class that has a `meta = PluginMeta(name=...)` attribute
+2. Implement one or more protocol methods:
+   - `get_knowledge(ctx)` — return domain knowledge items
+   - `get_guidelines(ctx)` — return coding rules as text
+   - `connect(ctx)` / `execute(action, params)` / `disconnect()` — system connector
+   - `get_test_data(ctx, schema)` — return test fixtures
+   - `on_phase_start(phase, ctx)` / `on_phase_end(phase, ctx)` — lifecycle hooks
+3. Load via `--plugin ./your_plugin.py` or place in `HIVE_PLUGINS_DIR` for auto-discovery
+4. See `hive/plugins/examples/` for working examples
+5. Write tests in `tests/test_plugins.py`
 
 ## Commit Messages
 

@@ -28,11 +28,16 @@ hive/                     ← core Python package (12 modules)
   state.py                ← Blackboard, Events, checkpoints, save/load
   telemetry.py            ← CostTracker, BudgetExceeded, estimate_cost, model_context_window
   ui.py                   ← ANSI terminal UI, sign-off prompts, progress dashboard
+  plugins/                ← Optional plugin system (protocol-based)
+    base.py               ← 5 plugin protocols (Knowledge, Guidelines, System, TestData, Lifecycle)
+    registry.py           ← PluginRegistry: discovery, loading, invocation helpers
+    examples/             ← Example plugins (SAP, company guidelines, GitHub, lifecycle)
 run_hive.py               ← CLI entry point (argparse)
 llm_client.py             ← backward-compat shim → hive/llm_client.py
 tests/
-  test_hive.py            ← ~381 unit tests (NO real LLM calls)
-  test_hardening.py       ← hardening + integration tests
+  test_hive.py            ← ~351 unit tests (NO real LLM calls)
+  test_hardening.py       ← ~72 hardening + integration tests
+  test_plugins.py         ← ~92 plugin system tests (515 total)
 ```
 
 ## Architecture
@@ -57,6 +62,10 @@ tests/
 - **Dep-layered build**: topological sort of file deps → parallel layers
 - **Memory** (`memory.py`): 3-tier learning (agent → team → global)
 - **Rate-limit retry**: 429-cascaded files queued for retry after cooldown
+- **Streaming LLM** (`llm_client.py`): `on_token` callback for real-time token streaming across all backends
+- **URL Attachment** (`connectors.py`): `--attach https://...` fetches remote URLs, auto-detects type
+- **Registry-Aware Dev Context** (`crew.py`): devs get full code of declared dependencies via `_dependency_context()`
+- **Plugin System** (`plugins/`): optional protocol-based plugins for knowledge, guidelines, systems, test data, lifecycle hooks
 
 ## Coding Rules — ALWAYS FOLLOW
 
@@ -123,6 +132,7 @@ make fmt           # ruff format
 | `HIVE_SANDBOX_TIMEOUT` | `30` | Max seconds per sandbox execution |
 | `HIVE_SANDBOX_ENABLED` | `1` | Set `0` to disable code execution sandbox |
 | `HIVE_RATE_LIMIT_COOLDOWN` | `30` | Seconds to wait before retrying rate-limited files |
+| `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
 
 ## Common Tasks
 
@@ -147,6 +157,13 @@ make fmt           # ruff format
 4. Add checkpoint save after the phase
 5. Add UI rendering for the phase events
 6. Write tests
+
+### Adding a plugin
+1. Create a Python file with a class that has a `meta = PluginMeta(name=...)` attribute
+2. Implement one or more protocol methods: `get_knowledge()`, `get_guidelines()`, `connect()/execute()/disconnect()`, `get_test_data()`, `on_phase_start()/on_phase_end()`
+3. Load via `--plugin ./your_plugin.py` or place in `HIVE_PLUGINS_DIR`
+4. See `hive/plugins/examples/` for working examples
+5. Write tests in `tests/test_plugins.py`
 
 ### Debugging a failed run
 1. Check `projects/<slug>/docs/logbook.json` — every LLM call is logged

@@ -267,6 +267,7 @@ class EPTCrew:
         auto_approve: bool = False,
         attach_paths: list[str] | None = None,
         repo_urls: list[str] | None = None,
+        plugin_paths: list[str] | None = None,
     ):
         self.feature = feature
         self.client = client or _default_llm
@@ -288,6 +289,37 @@ class EPTCrew:
 
         # UI
         self.ui = TerminalUI(self.board, verbose=verbose)
+
+        # Plugins — totally optional, zero impact when empty
+        self.plugin_registry = self._init_plugins(plugin_paths)
+
+    # ── Plugin helpers (zero-impact when no plugins) ─────────────────────────
+
+    @staticmethod
+    def _init_plugins(plugin_paths: list[str] | None) -> Any:
+        """Initialize the plugin registry. Returns None if no plugins found."""
+        try:
+            from hive.plugins.registry import PluginRegistry
+            registry = PluginRegistry()
+            count = registry.discover(explicit_paths=plugin_paths)
+            if count:
+                logger.info("Plugin system active: %s", registry.summary())
+            return registry if registry else None
+        except Exception as exc:
+            logger.debug("Plugin system not available: %s", exc)
+            return None
+
+    def _plugin_context(self) -> Any:
+        """Build a PluginContext from current board state."""
+        if not self.plugin_registry:
+            return None
+        from hive.plugins.base import PluginContext
+        return PluginContext(
+            feature=self.feature,
+            stack=self.board.research.languages if self.board.research else [],
+            phase=self.board.current_phase,
+            project_slug=self.board.project_slug,
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Main pipeline
@@ -343,6 +375,10 @@ class EPTCrew:
                 # Phase progress: "Phase 5/13 — 38%"
                 self.ui.overall_progress(phase_idx, len(phases), name)
                 self.cost_tracker.start_phase(name)
+                # Plugin lifecycle: phase start
+                pctx = self._plugin_context()
+                if self.plugin_registry and pctx:
+                    self.plugin_registry.on_phase_start(name, pctx)
                 try:
                     fn()
                 except KeyboardInterrupt:
@@ -370,6 +406,9 @@ class EPTCrew:
                     self.board.completed_phases.append(name)
                 else:
                     self.cost_tracker.end_phase()
+                    # Plugin lifecycle: phase end
+                    if self.plugin_registry and pctx:
+                        self.plugin_registry.on_phase_end(name, pctx)
         except KeyboardInterrupt:
             print("\n\n  ⚠️  Pipeline interrupted by user. Saving checkpoint...")
             self._save()
@@ -542,8 +581,47 @@ class EPTCrew:
         )
         self.ui.flush_events()
 
+        # ── Plugin injection: knowledge + guidelines ──
+        self._ingest_plugin_knowledge()
+
         self.board.completed_phases.append("ingest")
         self.ui.phase_footer("Knowledge Ingest")
+
+    def _ingest_plugin_knowledge(self) -> None:
+        """Inject knowledge and guidelines from plugins (if any loaded)."""
+        if not self.plugin_registry:
+            return
+        pctx = self._plugin_context()
+        if not pctx:
+            return
+
+        # Knowledge plugins → KnowledgeItems on the board
+        plugin_items = self.plugin_registry.gather_knowledge(pctx)
+        if plugin_items:
+            existing_paths = {i.source_path for i in self.board.knowledge_base}
+            added = 0
+            for item in plugin_items:
+                if item.source_path not in existing_paths:
+                    self.board.knowledge_base.append(item)
+                    existing_paths.add(item.source_path)
+                    added += 1
+            if added:
+                self.board.emit(
+                    EventType.AGREEMENT, "system",
+                    f"🔌 {added} knowledge item(s) from plugins",
+                )
+                self.ui.flush_events()
+
+        # Guidelines plugins → stored on board for injection into prompts
+        guidelines = self.plugin_registry.gather_guidelines(pctx)
+        if guidelines:
+            self.board.plugin_guidelines = guidelines
+            self.board.emit(
+                EventType.AGREEMENT, "system",
+                f"🔌 Guidelines loaded from plugins "
+                f"({len(guidelines)} chars)",
+            )
+            self.ui.flush_events()
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Phase 1: Research
@@ -1186,6 +1264,47 @@ class EPTCrew:
         self.board.completed_phases.append("build")
         self.ui.phase_footer("Build")
 
+    def _dependency_context(self, fname: str, meta: dict) -> str:
+        """Build targeted dependency context — full code of declared deps.
+
+        Instead of showing the dev 40-line previews of ALL approved files,
+        this gives the FULL code of the specific files this file depends on.
+        This dramatically improves import accuracy and interface alignment.
+        """
+        deps = meta.get("deps", [])
+        if not deps:
+            return ""
+
+        parts: list[str] = [
+            "\nDEPENDENCY FILES (full code of your declared dependencies):"
+        ]
+        total_chars = 0
+        max_chars = 30_000  # budget to avoid context explosion
+
+        for dep_name in deps:
+            entry = self.board.registry.get(dep_name)
+            if not entry or not entry.code:
+                continue
+            code = entry.code
+            entry_text = f"\n### {dep_name}\n```\n{code}\n```"
+            if total_chars + len(entry_text) > max_chars:
+                # Truncate this dep to stay within budget
+                remaining = max_chars - total_chars
+                if remaining > 200:
+                    truncated = code[: remaining - 100]
+                    entry_text = (
+                        f"\n### {dep_name}\n```\n{truncated}\n"
+                        f"# ... (truncated, {len(code)} chars total)\n```"
+                    )
+                    parts.append(entry_text)
+                break
+            parts.append(entry_text)
+            total_chars += len(entry_text)
+
+        if len(parts) == 1:
+            return ""  # no deps found in registry
+        return "\n".join(parts)
+
     def _build_file(self, fname: str) -> bool:
         """Build a single file: generate → review → revise loop."""
         entry = self.board.registry.get(fname)
@@ -1216,9 +1335,11 @@ class EPTCrew:
 
         # Generate
         system = DEV_SYSTEM.format(dev_name=dev.name, dev_tagline=dev.tagline)
+        dep_ctx = self._dependency_context(fname, meta)
         task = DEV_TASK.format(
             full_context=self.board.full_context_header(),
             approved_interfaces=self.board.approved_interfaces(),
+            dependency_context=dep_ctx,
             filename=fname,
             purpose=meta.get("purpose", "see contract"),
             deps=meta.get("deps", []),
@@ -1247,7 +1368,7 @@ class EPTCrew:
         entry.revision = 1
 
         # ── Sandbox pre-check: catch syntax/import errors before review ──
-        code = self._sandbox_check(fname, entry, dev, system)
+        code = self._sandbox_check(fname, entry, dev, system, dep_ctx=dep_ctx)
         entry.code = code
 
         # ── Self-reflection: dev critiques own code before review ──
@@ -1328,6 +1449,7 @@ class EPTCrew:
                 rev_task = DEV_REVISION_TASK.format(
                     full_context=self.board.full_context_header(),
                     approved_interfaces=self.board.approved_interfaces(),
+                    dependency_context=dep_ctx,
                     filename=fname,
                     current_code=entry.code,
                     review_issues=review_text,
@@ -1348,7 +1470,7 @@ class EPTCrew:
                 entry.revision += 1
 
                 # Sandbox re-check after revision
-                code = self._sandbox_check(fname, entry, dev, system)
+                code = self._sandbox_check(fname, entry, dev, system, dep_ctx=dep_ctx)
                 entry.code = code
 
         return False
@@ -1356,6 +1478,7 @@ class EPTCrew:
     def _sandbox_check(
         self, fname: str, entry: FileEntry, dev: Agent, system: str,
         max_sandbox_retries: int = 2,
+        dep_ctx: str = "",
     ) -> str:
         """Run the sandbox on generated code; let the dev self-correct on failure.
 
@@ -1402,6 +1525,7 @@ class EPTCrew:
             sandbox_task = DEV_SANDBOX_REVISION_TASK.format(
                 full_context=self.board.full_context_header(),
                 approved_interfaces=self.board.approved_interfaces(),
+                dependency_context=dep_ctx,
                 filename=fname,
                 current_code=entry.code,
                 sandbox_output=result.output,

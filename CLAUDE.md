@@ -22,8 +22,8 @@ No LangChain. No CrewAI. Just Python 3.12+, httpx, and structured prompts.
 | Package name | `hive` (PyPI: `hive-ept`) |
 | CLI command | `hive` |
 | Entry point | `run_hive.py` → `main()` |
-| Core package | `hive/` (12 modules) |
-| Tests | `tests/test_hive.py`, `tests/test_hardening.py` |
+| Core package | `hive/` (12 modules + plugins subpackage) |
+| Tests | `tests/test_hive.py` (~351), `tests/test_hardening.py` (~72), `tests/test_plugins.py` (~92) — 515 total |
 | Python | ≥ 3.12 |
 | Build system | Hatchling |
 | Only runtime dep | `httpx` |
@@ -45,12 +45,18 @@ hive/                     ← repo root
 │   ├── sandbox.py        ← Code execution loop: syntax check, import check, test runner
 │   ├── state.py          ← Blackboard, Events, checkpoints, save/load
 │   ├── telemetry.py      ← CostTracker, BudgetExceeded, estimate_cost, model_context_window
-│   └── ui.py             ← ANSI terminal UI, sign-off prompts, progress dashboard
+│   ├── ui.py             ← ANSI terminal UI, sign-off prompts, progress dashboard
+│   └── plugins/          ← Optional plugin system (protocol-based)
+│       ├── __init__.py   ← Plugin exports
+│       ├── base.py       ← 5 plugin protocols (Knowledge, Guidelines, System, TestData, Lifecycle)
+│       ├── registry.py   ← PluginRegistry: discovery, loading, invocation helpers
+│       └── examples/     ← Example plugins (SAP, company guidelines, GitHub, lifecycle)
 ├── run_hive.py           ← CLI entry point (argparse)
 ├── llm_client.py         ← backward-compat shim → hive/llm_client.py
 ├── tests/
 │   ├── test_hive.py      ← ~381 unit tests (NO real LLM calls)
-│   └── test_hardening.py ← hardening + integration tests
+│   ├── test_hardening.py ← hardening + integration tests
+│   └── test_plugins.py   ← plugin system tests (~92)
 ├── projects/             ← runtime output (gitignored)
 ├── pyproject.toml        ← package config, scripts, tool settings
 ├── Makefile              ← dev shortcuts
@@ -99,6 +105,10 @@ ruff format hive/ tests/ run_hive.py
 - **Dep-layered build**: topological sort of file deps → parallel layers
 - **Memory** (`hive/memory.py`): 3-tier learning (agent → team → global)
 - **Rate-limit retry**: 429-cascaded files queued for retry after cooldown
+- **Streaming LLM** (`hive/llm_client.py`): `on_token` callback for real-time token streaming across all backends
+- **URL Attachment** (`hive/connectors.py`): `--attach https://...` fetches remote URLs, auto-detects type
+- **Registry-Aware Dev Context** (`hive/crew.py`): devs get full code of declared dependencies via `_dependency_context()`
+- **Plugin System** (`hive/plugins/`): optional protocol-based plugins for knowledge, guidelines, systems, test data, lifecycle hooks
 
 ## Key Design Decisions — DO NOT VIOLATE
 
@@ -143,6 +153,7 @@ ruff format hive/ tests/ run_hive.py
 | `HIVE_SANDBOX_TIMEOUT` | `30` | Max seconds per sandbox execution |
 | `HIVE_SANDBOX_ENABLED` | `1` | Set `0` to disable code execution sandbox |
 | `HIVE_RATE_LIMIT_COOLDOWN` | `30` | Seconds to wait before retrying rate-limited files |
+| `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
 
 ## Common Tasks for Claude
 
@@ -167,6 +178,13 @@ ruff format hive/ tests/ run_hive.py
 4. Add checkpoint save after the phase
 5. Add UI rendering for the phase events
 6. Write tests
+
+### Adding a plugin
+1. Create a Python file with a class that has a `meta = PluginMeta(name=...)` attribute
+2. Implement one or more protocol methods: `get_knowledge()`, `get_guidelines()`, `connect()/execute()/disconnect()`, `get_test_data()`, `on_phase_start()/on_phase_end()`
+3. Load via `--plugin ./your_plugin.py` or place in `HIVE_PLUGINS_DIR`
+4. See `hive/plugins/examples/` for working examples
+5. Write tests in `tests/test_plugins.py`
 
 ### Debugging a failed run
 1. Check `projects/<slug>/docs/logbook.json` — every LLM call is logged
