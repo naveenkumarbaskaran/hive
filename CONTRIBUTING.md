@@ -31,16 +31,16 @@ hive/
 │   ├── connectors.py     #   External knowledge ingestion
 │   ├── memory.py         #   3-tier learning memory
 │   ├── hardening.py      #   Production utilities
-│   ├── sandbox.py        #   Code execution loop (syntax, import, test)
+│   ├── sandbox.py        #   Code execution loop (syntax, import, test, multi-file test execution)
 │   ├── telemetry.py      #   Cost tracking, budget enforcement
 │   └── plugins/          #   Optional plugin system (protocol-based)
 │       ├── base.py       #     5 plugin protocols
 │       ├── registry.py   #     Plugin discovery, loading, lifecycle
 │       └── examples/     #     Example plugins (SAP, guidelines, GitHub, lifecycle)
-├── tests/                # Test suite (~646 tests)
-│   ├── test_hive.py       #   Core functionality tests
-│   ├── test_hardening.py #   Hardening & safety tests
-│   └── test_plugins.py   #   Plugin system tests
+├── tests/                # Test suite (~677 tests)
+│   ├── test_hive.py       #   Core functionality tests (~497)
+│   ├── test_hardening.py #   Hardening & safety tests (~88)
+│   └── test_plugins.py   #   Plugin system tests (~92)
 ├── run_hive.py            # CLI entry point
 ├── ARCHITECTURE.md       # Detailed architecture docs
 └── pyproject.toml        # Package configuration

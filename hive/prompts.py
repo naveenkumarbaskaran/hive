@@ -709,6 +709,69 @@ Rewrite the COMPLETE file. Fix every execution error. Produce ONLY code.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Developer — Test execution feedback (real pytest failures)
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEV_TEST_FIX_TASK = """\
+{full_context}
+
+APPROVED FILES:
+{approved_interfaces}
+{dependency_context}
+YOUR CURRENT CODE for {filename}:
+```
+{current_code}
+```
+
+TEST EXECUTION RESULTS — your code was tested with real pytest and FAILED:
+```
+{test_output}
+```
+
+These are REAL test failures from actually running the tests.  Analyze each
+failure carefully:
+- If the test expects behaviour your code doesn't implement → fix YOUR code
+- If your code raises an unexpected exception → fix the root cause
+- Check function signatures, return types, error handling, and edge cases
+
+Rewrite the COMPLETE file. Fix every test failure. Produce ONLY code.
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Developer — Integration test fix (cross-file test failures)
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEV_INTEGRATION_FIX_TASK = """\
+{full_context}
+
+APPROVED FILES:
+{approved_interfaces}
+{dependency_context}
+YOUR FILE {filename}:
+```
+{current_code}
+```
+
+INTEGRATION TEST FAILURES — all files were tested together and these failures
+involve YOUR file:
+```
+{test_output}
+```
+
+These are REAL pytest failures from running the full test suite with all files
+staged together.  Your file may be correct in isolation but fails when
+integrated.  Common causes:
+- Interface mismatch with a dependency (wrong arg count, wrong return type)
+- Missing error handling that a sibling test exercises
+- Import-time side effects that break in multi-file context
+
+Fix the issues in YOUR file only.  Produce the COMPLETE rewritten file.
+Produce ONLY code.
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Integration phase
 # ─────────────────────────────────────────────────────────────────────────────
 

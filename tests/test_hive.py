@@ -4792,5 +4792,371 @@ class TestBlackboardPIIReport:
         assert board.pii_report == "PII scan: 2 findings"
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  MVP 1 — Test Execution Feedback Loop
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestRunTestInContext:
+    """Tests for the run_test_in_context sandbox function."""
+
+    def test_run_test_in_context_import(self):
+        """run_test_in_context is importable from sandbox module."""
+        from hive.sandbox import run_test_in_context
+        assert callable(run_test_in_context)
+
+    def test_run_all_tests_in_context_import(self):
+        """run_all_tests_in_context is importable from sandbox module."""
+        from hive.sandbox import run_all_tests_in_context
+        assert callable(run_all_tests_in_context)
+
+    def test_run_test_disabled(self, monkeypatch):
+        """Returns success when sandbox is disabled."""
+        import hive.sandbox as sb_mod
+        monkeypatch.setattr(sb_mod, "SANDBOX_ENABLED", False)
+        from hive.sandbox import run_test_in_context
+        result = run_test_in_context("test_foo.py", {"test_foo.py": "pass"})
+        assert result.success
+
+    def test_run_test_missing_file(self, monkeypatch):
+        """Returns success+skip when test file not in staged files."""
+        import hive.sandbox as sb_mod
+        monkeypatch.setattr(sb_mod, "SANDBOX_ENABLED", True)
+        from hive.sandbox import run_test_in_context
+        result = run_test_in_context("test_missing.py", {"app.py": "x = 1"})
+        assert result.success
+        assert "skipped" in result.stdout.lower() or "not in" in result.stdout.lower()
+
+    def test_run_test_passing(self, monkeypatch):
+        """Passing tests return success=True."""
+        import hive.sandbox as sb_mod
+        monkeypatch.setattr(sb_mod, "SANDBOX_ENABLED", True)
+        from hive.sandbox import run_test_in_context
+        source = 'def add(a, b): return a + b\n'
+        test = 'from calc import add\ndef test_add(): assert add(1, 2) == 3\n'
+        result = run_test_in_context("test_calc.py", {
+            "calc.py": source, "test_calc.py": test,
+        })
+        assert result.success
+
+    def test_run_test_failing(self, monkeypatch):
+        """Failing tests return success=False with output."""
+        import hive.sandbox as sb_mod
+        monkeypatch.setattr(sb_mod, "SANDBOX_ENABLED", True)
+        from hive.sandbox import run_test_in_context
+        source = 'def add(a, b): return a - b\n'  # BUG: subtract instead of add
+        test = 'from calc import add\ndef test_add(): assert add(1, 2) == 3\n'
+        result = run_test_in_context("test_calc.py", {
+            "calc.py": source, "test_calc.py": test,
+        })
+        assert not result.success
+
+    def test_run_all_tests_disabled(self, monkeypatch):
+        """run_all_tests_in_context returns success when disabled."""
+        import hive.sandbox as sb_mod
+        monkeypatch.setattr(sb_mod, "SANDBOX_ENABLED", False)
+        from hive.sandbox import run_all_tests_in_context
+        result = run_all_tests_in_context({"app.py": "x = 1"})
+        assert result.success
+
+    def test_run_all_tests_passing(self, monkeypatch):
+        """All tests passing returns success=True."""
+        import hive.sandbox as sb_mod
+        monkeypatch.setattr(sb_mod, "SANDBOX_ENABLED", True)
+        from hive.sandbox import run_all_tests_in_context
+        files = {
+            "math_ops.py": "def mul(a, b): return a * b\n",
+            "test_math_ops.py": (
+                "from math_ops import mul\n"
+                "def test_mul(): assert mul(3, 4) == 12\n"
+            ),
+        }
+        result = run_all_tests_in_context(files)
+        assert result.success
+
+    def test_run_all_tests_failing(self, monkeypatch):
+        """Failing tests detected across multiple files."""
+        import hive.sandbox as sb_mod
+        monkeypatch.setattr(sb_mod, "SANDBOX_ENABLED", True)
+        from hive.sandbox import run_all_tests_in_context
+        files = {
+            "math_ops.py": "def mul(a, b): return a + b\n",  # BUG
+            "test_math_ops.py": (
+                "from math_ops import mul\n"
+                "def test_mul(): assert mul(3, 4) == 12\n"
+            ),
+        }
+        result = run_all_tests_in_context(files)
+        assert not result.success
+
+
+class TestDevTestFixPrompt:
+    """Tests for the DEV_TEST_FIX_TASK and DEV_INTEGRATION_FIX_TASK prompts."""
+
+    def test_dev_test_fix_task_exists(self):
+        from hive.prompts import DEV_TEST_FIX_TASK
+        assert isinstance(DEV_TEST_FIX_TASK, str)
+        assert "{test_output}" in DEV_TEST_FIX_TASK
+        assert "{current_code}" in DEV_TEST_FIX_TASK
+        assert "{filename}" in DEV_TEST_FIX_TASK
+
+    def test_dev_test_fix_task_format(self):
+        from hive.prompts import DEV_TEST_FIX_TASK
+        result = DEV_TEST_FIX_TASK.format(
+            full_context="CONTEXT",
+            approved_interfaces="INTERFACES",
+            dependency_context="DEPS",
+            filename="app.py",
+            current_code="def hello(): pass",
+            test_output="FAILED test_hello - assert False",
+        )
+        assert "app.py" in result
+        assert "FAILED test_hello" in result
+
+    def test_dev_integration_fix_task_exists(self):
+        from hive.prompts import DEV_INTEGRATION_FIX_TASK
+        assert isinstance(DEV_INTEGRATION_FIX_TASK, str)
+        assert "{test_output}" in DEV_INTEGRATION_FIX_TASK
+        assert "{filename}" in DEV_INTEGRATION_FIX_TASK
+
+    def test_dev_integration_fix_task_format(self):
+        from hive.prompts import DEV_INTEGRATION_FIX_TASK
+        result = DEV_INTEGRATION_FIX_TASK.format(
+            full_context="CONTEXT",
+            approved_interfaces="INTERFACES",
+            dependency_context="DEPS",
+            filename="service.py",
+            current_code="class Service: pass",
+            test_output="FAILED test_integration - ImportError",
+        )
+        assert "service.py" in result
+        assert "FAILED test_integration" in result
+
+    def test_dev_test_fix_task_mentions_pytest(self):
+        from hive.prompts import DEV_TEST_FIX_TASK
+        assert "pytest" in DEV_TEST_FIX_TASK.lower()
+
+    def test_dev_integration_fix_task_mentions_integration(self):
+        from hive.prompts import DEV_INTEGRATION_FIX_TASK
+        assert "integration" in DEV_INTEGRATION_FIX_TASK.lower()
+
+
+class TestFileEntryTestOutput:
+    """Tests for FileEntry.test_output field."""
+
+    def test_file_entry_has_test_output(self):
+        entry = FileEntry(name="app.py")
+        assert hasattr(entry, "test_output")
+        assert entry.test_output == ""
+
+    def test_file_entry_test_output_settable(self):
+        entry = FileEntry(name="app.py")
+        entry.test_output = "2 passed, 1 failed"
+        assert entry.test_output == "2 passed, 1 failed"
+
+    def test_file_entry_test_output_serialization(self):
+        """test_output survives dataclass serialization."""
+        from dataclasses import asdict
+        entry = FileEntry(name="app.py", test_output="all passed")
+        d = asdict(entry)
+        assert d["test_output"] == "all passed"
+
+
+class TestTestExecutionCheck:
+    """Tests for EPTCrew._test_execution_check method."""
+
+    def _make_crew(self, monkeypatch, tmp_path):
+        """Create a minimal EPTCrew for testing."""
+        import hive.state as state_mod
+        monkeypatch.setattr(state_mod, "PROJECTS_DIR", tmp_path / "projects")
+        monkeypatch.setenv("LLM_API_KEY", "test")
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.chat.return_value = LLMResponse(
+            text="def add(a, b): return a + b\n",
+            model="test", input_tokens=10, output_tokens=10,
+        )
+        crew = EPTCrew(feature="Test", client=mock_client, auto_approve=True)
+        crew.board.init_project()
+        return crew
+
+    def test_test_execution_check_exists(self):
+        """Method exists on EPTCrew."""
+        assert hasattr(EPTCrew, "_test_execution_check")
+
+    def test_skips_non_python(self, monkeypatch, tmp_path):
+        """Non-Python files are skipped."""
+        crew = self._make_crew(monkeypatch, tmp_path)
+        entry = FileEntry(name="readme.md", code="# Hello")
+        dev = make_dev_agent(0)
+        result = crew._test_execution_check(
+            "readme.md", entry, dev, "system",
+        )
+        assert result == "# Hello"
+
+    def test_skips_when_no_test_file(self, monkeypatch, tmp_path):
+        """Source files without a matching test are skipped."""
+        crew = self._make_crew(monkeypatch, tmp_path)
+        entry = FileEntry(name="utils.py", code="x = 1")
+        dev = make_dev_agent(0)
+        result = crew._test_execution_check(
+            "utils.py", entry, dev, "system",
+        )
+        assert result == "x = 1"  # unchanged
+
+    def test_skips_when_sandbox_disabled(self, monkeypatch, tmp_path):
+        """Disabled sandbox means skip."""
+        import hive.crew as crew_mod
+        monkeypatch.setattr(crew_mod, "SANDBOX_ENABLED", False)
+        crew = self._make_crew(monkeypatch, tmp_path)
+        entry = FileEntry(name="test_app.py", code="def test_x(): pass")
+        dev = make_dev_agent(0)
+        result = crew._test_execution_check(
+            "test_app.py", entry, dev, "system",
+        )
+        assert result == "def test_x(): pass"
+
+    def test_test_file_runs_pytest(self, monkeypatch, tmp_path):
+        """Test files actually get pytest executed."""
+        crew = self._make_crew(monkeypatch, tmp_path)
+        # Add a source file that the test imports
+        source_entry = FileEntry(
+            name="calc.py", code="def add(a, b): return a + b\n",
+            approved=True,
+        )
+        crew.board.registry["calc.py"] = source_entry
+        # Build a passing test file
+        test_code = (
+            "from calc import add\n"
+            "def test_add(): assert add(2, 3) == 5\n"
+        )
+        entry = FileEntry(name="test_calc.py", code=test_code)
+        dev = make_dev_agent(0)
+        result = crew._test_execution_check(
+            "test_calc.py", entry, dev, "system",
+        )
+        assert result == test_code  # unchanged since tests pass
+        assert "passed" in entry.test_output.lower() or entry.test_output == ""
+
+    def test_failing_test_triggers_fix(self, monkeypatch, tmp_path):
+        """Failing tests trigger a dev fix call."""
+        crew = self._make_crew(monkeypatch, tmp_path)
+        # Source with a bug
+        source_entry = FileEntry(
+            name="calc.py", code="def add(a, b): return a - b\n",  # BUG
+            approved=True,
+        )
+        crew.board.registry["calc.py"] = source_entry
+        test_code = (
+            "from calc import add\n"
+            "def test_add(): assert add(2, 3) == 5\n"
+        )
+        entry = FileEntry(name="test_calc.py", code=test_code)
+        dev = make_dev_agent(0)
+        # Mock client returns "fixed" code
+        crew.client.chat.return_value = LLMResponse(
+            text=test_code, model="test", input_tokens=10, output_tokens=10,
+        )
+        crew._test_execution_check("test_calc.py", entry, dev, "system")
+        # The dev should have been asked to fix
+        assert crew.client.chat.call_count >= 1
+
+
+class TestIntegrationFixLoop:
+    """Tests for EPTCrew._integration_test_fix_loop method."""
+
+    def test_method_exists(self):
+        assert hasattr(EPTCrew, "_integration_test_fix_loop")
+
+    def test_passing_tests_no_fixes(self, monkeypatch, tmp_path):
+        """When all tests pass, no fixes are attempted."""
+        import hive.state as state_mod
+        monkeypatch.setattr(state_mod, "PROJECTS_DIR", tmp_path / "projects")
+        monkeypatch.setenv("LLM_API_KEY", "test")
+        mock_client = MagicMock(spec=LLMClient)
+        crew = EPTCrew(feature="Test", client=mock_client, auto_approve=True)
+        crew.board.init_project()
+
+        files = {
+            "calc.py": "def add(a, b): return a + b\n",
+            "test_calc.py": (
+                "from calc import add\n"
+                "def test_add(): assert add(1, 2) == 3\n"
+            ),
+        }
+        # Add registry entries
+        crew.board.registry["calc.py"] = FileEntry(
+            name="calc.py", code=files["calc.py"], approved=True,
+            assigned_dev="Dev_0",
+        )
+        crew.board.registry["test_calc.py"] = FileEntry(
+            name="test_calc.py", code=files["test_calc.py"], approved=True,
+        )
+
+        result = crew._integration_test_fix_loop(files)
+        # No LLM calls needed — tests already pass
+        assert mock_client.chat.call_count == 0
+        assert result == files  # unchanged
+
+    def test_failing_tests_trigger_fix(self, monkeypatch, tmp_path):
+        """Failing integration tests route to dev for fixing."""
+        import hive.state as state_mod
+        monkeypatch.setattr(state_mod, "PROJECTS_DIR", tmp_path / "projects")
+        monkeypatch.setenv("LLM_API_KEY", "test")
+        # Mock returns "fixed" code
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.chat.return_value = LLMResponse(
+            text="def add(a, b): return a + b\n",
+            model="test", input_tokens=10, output_tokens=10,
+        )
+        crew = EPTCrew(feature="Test", client=mock_client, auto_approve=True)
+        crew.board.init_project()
+
+        files = {
+            "calc.py": "def add(a, b): return a - b\n",  # BUG
+            "test_calc.py": (
+                "from calc import add\n"
+                "def test_add(): assert add(1, 2) == 3\n"
+            ),
+        }
+        # Add dev agent
+        dev = make_dev_agent(0)
+        dev.active = True
+        crew.agents[dev.id] = dev
+        crew.board.registry["calc.py"] = FileEntry(
+            name="calc.py", code=files["calc.py"], approved=True,
+            assigned_dev=dev.name,
+        )
+        crew.board.registry["test_calc.py"] = FileEntry(
+            name="test_calc.py", code=files["test_calc.py"], approved=True,
+        )
+
+        result = crew._integration_test_fix_loop(files)
+        # Dev should have been called to fix
+        assert mock_client.chat.call_count >= 1
+        # The fixed code should be in the result (clean_code may strip trailing newline)
+        assert "return a + b" in result["calc.py"]
+
+
+class TestCrewMaxIntegrationFixes:
+    """Tests for MAX_INTEGRATION_FIXES and MAX_TEST_FIX_ATTEMPTS class vars."""
+
+    def test_max_integration_fixes_default(self):
+        assert EPTCrew.MAX_INTEGRATION_FIXES == 2
+
+    def test_max_test_fix_attempts_default(self):
+        assert EPTCrew.MAX_TEST_FIX_ATTEMPTS == 2
+
+    def test_max_integration_fixes_env(self, monkeypatch):
+        monkeypatch.setenv("HIVE_MAX_INTEGRATION_FIXES", "5")
+        # Re-evaluate (class var is set at import time, so test the env var)
+        val = int(os.environ.get("HIVE_MAX_INTEGRATION_FIXES", "2"))
+        assert val == 5
+
+    def test_max_test_fix_attempts_env(self, monkeypatch):
+        monkeypatch.setenv("HIVE_MAX_TEST_FIX_ATTEMPTS", "4")
+        val = int(os.environ.get("HIVE_MAX_TEST_FIX_ATTEMPTS", "2"))
+        assert val == 4
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

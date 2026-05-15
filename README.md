@@ -6,7 +6,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Tests](https://img.shields.io/badge/tests-646%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-677%20passing-brightgreen)
 ![Dependencies](https://img.shields.io/badge/deps-1%20(httpx)-orange)
 
 ---
@@ -138,6 +138,8 @@ Every generated Python file is **actually executed** before review:
 - **Import check** verifies the module loads without runtime errors
 - **Context-aware imports**: `check_file_in_context()` stages sibling registry files so cross-module imports resolve correctly; distinguishes internal vs external `ModuleNotFoundError`
 - **Test execution** if test files are generated
+- **Test Execution Feedback Loop**: `run_test_in_context()` stages all project files and runs real pytest; failures are fed back to the dev for fixing (up to `HIVE_MAX_TEST_FIX_ATTEMPTS` rounds)
+- **Integration Test Fix Loop**: after integration review, per-file test failures are isolated and routed back to responsible devs (up to `HIVE_MAX_INTEGRATION_FIXES` rounds)
 - Runs in an isolated temp directory with API keys stripped
 - Sandbox feedback loops back to the dev for self-correction
 - Configurable: `HIVE_SANDBOX_TIMEOUT=30`, disable with `HIVE_SANDBOX_ENABLED=0`
@@ -362,6 +364,8 @@ All configuration is via **environment variables** — no config files to manage
 | `HIVE_MAX_EVENTS` | `1000` | Max events kept in Blackboard memory |
 | `HIVE_MAX_GLOBAL_MEMORY` | `100` | Max global memory entries retained |
 | `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
+| `HIVE_MAX_INTEGRATION_FIXES` | `2` | Max rounds of integration test fix loop |
+| `HIVE_MAX_TEST_FIX_ATTEMPTS` | `2` | Max attempts to fix test failures during build |
 | `NO_COLOR` | — | Disable ANSI colors (any value) |
 
 ### Rate Limit Handling
@@ -416,7 +420,7 @@ make test-cov
 make lint
 ```
 
-646 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, contract amendment rebuild, dep-blocker guard, quality playbook, PII scanning, regression test generation, and the plugin system — all without making real API calls.
+677 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, contract amendment rebuild, dep-blocker guard, quality playbook, PII scanning, regression test generation, test execution feedback loop, integration test fix loop, and the plugin system — all without making real API calls.
 
 ## Architecture
 

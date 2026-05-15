@@ -103,13 +103,13 @@ and structured prompts.
 | `hive/connectors.py` | ~580 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest, URL fetch |
 | `hive/hardening.py` | ~478 | atomic_write, file_lock, sanitize, budget, disk checks |
 | `hive/memory.py` | ~456 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
-| `hive/sandbox.py` | ~600 | Code execution loop: Sandbox, syntax check, import check, test runner, PII scanner, coverage runner, safe subprocess, context-aware imports |
+| `hive/sandbox.py` | ~600 | Code execution loop: Sandbox, syntax check, import check, test runner, PII scanner, coverage runner, safe subprocess, context-aware imports, multi-file test execution (`run_test_in_context`, `run_all_tests_in_context`) |
 | `hive/agents.py` | ~338 | Agent dataclass with logbook+memory-wired think(), AgentRoster (10 named agents), DEV_POOL, REVIEWER_POOL |
 | `hive/telemetry.py` | ~317 | **NEW** CostTracker, BudgetExceeded, estimate_cost, model_context_window, per-phase PhaseMetrics |
 | `hive/plugins/` | ~660 | **NEW** Optional plugin system: protocols (base.py), discovery+registry (registry.py), 4 example plugins |
 | `hive/__init__.py` | ~44 | Package exports |
 | `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo, --plugin |
-| `tests/test_hive.py` | ~4796 | ~466 unit tests (no API calls) |
+| `tests/test_hive.py` | ~4796 | ~497 unit tests (no API calls) |
 | `tests/test_hardening.py` | ~669 | ~88 hardening + integration tests |
 | `tests/test_plugins.py` | ~760 | ~92 plugin system tests |
 
@@ -243,6 +243,54 @@ Proceed to review anyway (sandbox is advisory, not blocking)
 - Path traversal in filenames blocked
 - Can be disabled entirely: `HIVE_SANDBOX_ENABLED=0`
 - **Context-aware imports**: `check_file_in_context()` stages all sibling registry files alongside the target so cross-module imports resolve correctly; distinguishes internal vs external `ModuleNotFoundError`
+
+### 6b-ii. Test Execution Feedback Loop
+After sandbox syntax/import checks and self-reflection, test files go through
+a **real pytest execution** loop (`hive/sandbox.py` + `hive/crew.py`):
+
+```
+Dev code passes syntax + import check
+      ↓
+Self-Reflection (FAST tier)
+      ↓
+run_test_in_context(): stage ALL project files + run pytest
+      ↓ tests pass?
+      │   YES → proceed to review
+      │   NO  → feed real pytest output back to dev
+      ↓
+Dev rewrites based on actual test failures
+      ↓ (up to MAX_TEST_FIX_ATTEMPTS rounds, default 2)
+Proceed to review
+```
+
+**Multi-file test execution** (`run_test_in_context()`, `run_all_tests_in_context()`):
+- Stages ALL approved files from the registry into a temp directory
+- Cross-module imports resolve correctly since all siblings are present
+- Runs real `pytest` with output capture
+- Returns pass/fail status + captured output for LLM feedback
+
+### 6b-iii. Integration Test Fix Loop
+During the integration phase, after `run_code_checks` identifies test failures,
+`_integration_test_fix_loop()` (`hive/crew.py`) routes failures back to devs:
+
+```
+Quinn runs run_code_checks (full integration test suite)
+      ↓ failures found?
+      │   NO  → integration complete
+      │   YES → isolate which test files fail
+      ↓
+For each failing test:
+  - Identify responsible dev (who built the source file)
+  - Send real pytest output + contract to dev
+  - Dev fixes the source file
+      ↓
+Re-run integration tests
+      ↓ (up to MAX_INTEGRATION_FIXES rounds, default 2)
+Proceed with remaining integration results
+```
+
+Configurable via `HIVE_MAX_INTEGRATION_FIXES` (default 2) and
+`HIVE_MAX_TEST_FIX_ATTEMPTS` (default 2).
 
 ### 6c. Self-Reflection Loop
 After sandbox (before review), each Python file goes through a **self-reflection**

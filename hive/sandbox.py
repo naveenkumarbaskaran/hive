@@ -598,3 +598,63 @@ def check_file_in_context(
             command=f"check_file_in_context: {target}",
             files_written=list(all_files.keys()),
         )
+
+
+def run_test_in_context(
+    test_file: str,
+    all_files: dict[str, str],
+    timeout: int = SANDBOX_TIMEOUT,
+) -> SandboxResult:
+    """Stage all files and run pytest on a specific test file.
+
+    Unlike ``check_file_in_context`` (syntax + import only), this actually
+    *executes* the test file and returns real pytest output.  Used by the
+    build-phase test-execution feedback loop so dev agents get concrete
+    pass/fail results they can act on.
+
+    Args:
+        test_file: The test file to execute (e.g. ``test_calculator.py``).
+        all_files: All source + test files to stage in the sandbox.
+        timeout: Max seconds for the test run.
+
+    Returns:
+        SandboxResult with pytest stdout/stderr and pass/fail status.
+    """
+    if not SANDBOX_ENABLED:
+        return SandboxResult(success=True, stdout="Sandbox disabled (HIVE_SANDBOX_ENABLED=0)")
+
+    if test_file not in all_files:
+        return SandboxResult(
+            success=True,
+            stdout=f"Test file {test_file} not in staged files — skipped",
+            command="(no test to run)",
+        )
+
+    with Sandbox(timeout=timeout) as sb:
+        sb.add_files(all_files)
+
+        # Run pytest on the specific test file
+        result = sb.run_tests([test_file])
+        return result
+
+
+def run_all_tests_in_context(
+    all_files: dict[str, str],
+    timeout: int = SANDBOX_TIMEOUT,
+) -> SandboxResult:
+    """Stage all files and run pytest on ALL test files together.
+
+    This is the multi-file integration test runner.  All source files and
+    test files are staged in the same sandbox so cross-module imports
+    resolve correctly, then pytest discovers and runs all ``test_*.py``
+    files in one session.
+
+    Returns:
+        SandboxResult with combined pytest output and overall pass/fail.
+    """
+    if not SANDBOX_ENABLED:
+        return SandboxResult(success=True, stdout="Sandbox disabled (HIVE_SANDBOX_ENABLED=0)")
+
+    with Sandbox(timeout=timeout) as sb:
+        sb.add_files(all_files)
+        return sb.run_tests()

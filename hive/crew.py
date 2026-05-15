@@ -51,11 +51,13 @@ from hive.prompts import (
     ARCHIE_FEASIBILITY_SYSTEM,
     ARCHIE_SYSTEM,
     ARCHIE_TASK,
+    DEV_INTEGRATION_FIX_TASK,
     DEV_REVISION_TASK,
     DEV_SANDBOX_REVISION_TASK,
     DEV_SELF_REFLECT_TASK,
     DEV_SYSTEM,
     DEV_TASK,
+    DEV_TEST_FIX_TASK,
     DM_SYSTEM,
     DM_TASK,
     HANDOVER_SYSTEM,
@@ -95,6 +97,7 @@ from hive.sandbox import (
     check_file_in_context,
     format_pii_findings,
     run_code_checks,
+    run_test_in_context,
     scan_pii,
 )
 from hive.state import (
@@ -270,6 +273,8 @@ class EPTCrew:
     """
 
     MAX_REVISIONS = int(os.environ.get("HIVE_MAX_REVISIONS", "3"))
+    MAX_INTEGRATION_FIXES = int(os.environ.get("HIVE_MAX_INTEGRATION_FIXES", "2"))
+    MAX_TEST_FIX_ATTEMPTS = int(os.environ.get("HIVE_MAX_TEST_FIX_ATTEMPTS", "2"))
 
     def __init__(
         self,
@@ -1392,6 +1397,10 @@ class EPTCrew:
         code = self._self_reflect(fname, entry, dev, system, meta)
         entry.code = code
 
+        # ── Test execution feedback: run real pytest, fix failures ──
+        code = self._test_execution_check(fname, entry, dev, system, dep_ctx=dep_ctx)
+        entry.code = code
+
         # Review loop
         for attempt in range(1, self.MAX_REVISIONS + 1):
             self.ui.file_status(fname, "reviewing", f"attempt {attempt}")
@@ -1488,6 +1497,12 @@ class EPTCrew:
 
                 # Sandbox re-check after revision
                 code = self._sandbox_check(fname, entry, dev, system, dep_ctx=dep_ctx)
+                entry.code = code
+
+                # Re-run tests after revision
+                code = self._test_execution_check(
+                    fname, entry, dev, system, dep_ctx=dep_ctx,
+                )
                 entry.code = code
 
         return False
@@ -1610,6 +1625,111 @@ class EPTCrew:
                                  f"Self-reflection caught issues in {fname}",
                                  context="pre-review self-correction")
         return reflected
+
+    def _test_execution_check(
+        self, fname: str, entry: FileEntry, dev: Agent, system: str,
+        dep_ctx: str = "",
+    ) -> str:
+        """Run actual pytest on test files during build, feeding failures to dev.
+
+        For **test files** (``test_*.py``): runs the test file against all
+        approved source files in the sandbox.  If tests fail, the dev gets
+        real pytest output and a chance to fix before the review phase.
+
+        For **source files**: if a corresponding ``test_<name>.py`` is already
+        approved, runs it against the new source code.  Failures mean the
+        source code broke its own tests.
+
+        Returns the (possibly revised) code.
+        """
+        if not SANDBOX_ENABLED or not fname.endswith(".py"):
+            return entry.code
+
+        # Build the full file set: all approved files + this file
+        all_files: dict[str, str] = {}
+        for name, fe in self.board.registry.items():
+            if fe.approved and fe.code:
+                all_files[name] = fe.code
+        all_files[fname] = entry.code
+
+        # Determine which test file(s) to run
+        if fname.startswith("test_"):
+            # This IS a test file — run it directly
+            test_files_to_run = [fname]
+        else:
+            # Source file — check if a test file exists for it
+            base = fname.removesuffix(".py")
+            test_name = f"test_{base}.py"
+            if test_name in all_files:
+                test_files_to_run = [test_name]
+            else:
+                # No test file available yet — skip
+                return entry.code
+
+        for test_fix_attempt in range(1, self.MAX_TEST_FIX_ATTEMPTS + 1):
+            self.ui.file_status(fname, "testing", f"run #{test_fix_attempt}")
+
+            for tf in test_files_to_run:
+                result = run_test_in_context(tf, all_files)
+
+                if result.success:
+                    self.board.emit(
+                        EventType.SPEAKING, "system",
+                        f"✅ Tests passed: {tf} (for {fname})",
+                    )
+                    self.ui.flush_events()
+                    entry.test_output = result.stdout
+                    return entry.code
+
+                # Tests failed — feed output to dev
+                self.board.emit(
+                    EventType.ERROR, "system",
+                    f"❌ Tests failed: {tf} (for {fname})",
+                )
+                self.ui.flush_events()
+
+                if test_fix_attempt >= self.MAX_TEST_FIX_ATTEMPTS:
+                    self.board.emit(
+                        EventType.SPEAKING, "system",
+                        f"🧪 Test fix attempts exhausted for {fname}"
+                        " — proceeding to review",
+                    )
+                    self._record_mistake(
+                        dev.id,
+                        f"Test failures in {tf} for {fname}: "
+                        f"{result.output[:200]}",
+                        context="test execution feedback exhausted",
+                    )
+                    entry.test_output = result.output
+                    return entry.code
+
+                # Ask the dev to fix based on real test output
+                self.ui.file_status(fname, "test-fix", f"→ {dev.name}")
+                fix_task = DEV_TEST_FIX_TASK.format(
+                    full_context=self.board.full_context_header(),
+                    approved_interfaces=self.board.approved_interfaces(),
+                    dependency_context=dep_ctx,
+                    filename=fname,
+                    current_code=entry.code,
+                    test_output=result.output,
+                )
+                self._set_memory(dev.id)
+                code = dev.think(self.board, fix_task, system, self.client)
+                self._clear_memory()
+                self.ui.flush_events()
+
+                code = self._clean_code(code)
+                try:
+                    code = validate_code_output(code, fname)
+                except ValueError as e:
+                    logger.warning(
+                        "Test-fix validation failed for %s: %s", fname, e,
+                    )
+                entry.code = code
+                # Update the file set for the next attempt
+                all_files[fname] = code
+
+        return entry.code
 
     def _format_contract_spec(self, fname: str, meta: dict) -> str:
         """Format the contract specification for a specific file.
@@ -1927,6 +2047,141 @@ class EPTCrew:
             return False
 
     # ─────────────────────────────────────────────────────────────────────────
+    #  Integration test fix loop — route real test failures to devs
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _integration_test_fix_loop(
+        self, all_files: dict[str, str],
+    ) -> dict[str, str]:
+        """Run multi-file integration tests and fix failures in a loop.
+
+        When ``run_code_checks`` reports test failures, this method:
+        1. Runs each test file individually to isolate which ones fail
+        2. Routes each failure to the dev who built the tested source file
+        3. The dev gets real pytest output and fixes the code
+        4. Updated files are re-staged and tests re-run
+        5. Repeats up to ``MAX_INTEGRATION_FIXES`` rounds
+
+        Returns the (possibly updated) file dict.
+        """
+        for fix_round in range(1, self.MAX_INTEGRATION_FIXES + 1):
+            self.board.emit(
+                EventType.SPEAKING, "system",
+                f"🔧 Integration fix round {fix_round}/{self.MAX_INTEGRATION_FIXES}...",
+            )
+            self.ui.flush_events()
+
+            # Run each test file individually to find which ones fail
+            test_files = [f for f in all_files if f.startswith("test_")]
+            failures: list[tuple[str, str]] = []  # (test_file, output)
+
+            for tf in test_files:
+                result = run_test_in_context(tf, all_files)
+                if not result.success:
+                    failures.append((tf, result.output))
+
+            if not failures:
+                self.board.emit(EventType.SPEAKING, "system",
+                                "✅ All integration tests pass after fixes")
+                self.ui.flush_events()
+                break
+
+            # Route each failure to the responsible dev
+            any_fixed = False
+            for tf, test_output in failures:
+                # Find the source file this test covers
+                source_name = tf.removeprefix("test_")
+                if source_name not in all_files:
+                    # Can't find source — try without prefix
+                    continue
+
+                entry = self.board.registry.get(source_name)
+                if not entry or not entry.approved:
+                    continue
+
+                # Find the dev who built this file
+                dev_agents = [
+                    a for a in self.agents.values()
+                    if a.id.startswith("dev_") and a.active
+                ]
+                dev = None
+                for a in dev_agents:
+                    if a.name == entry.assigned_dev:
+                        dev = a
+                        break
+                if not dev and dev_agents:
+                    dev = dev_agents[0]
+                if not dev:
+                    continue
+
+                self.board.emit(
+                    EventType.SPEAKING, "system",
+                    f"🔧 Routing {tf} failure to {dev.name}"
+                    f" (fixing {source_name})",
+                )
+                self.ui.file_status(source_name, "integration-fix",
+                                    f"→ {dev.name}")
+                self.ui.flush_events()
+
+                # Get dependency context
+                contract_data = getattr(self, "_contract_cache", None) or {}
+                meta = contract_data.get(source_name, {})
+                dep_ctx = self._dependency_context(source_name, meta)
+
+                system = DEV_SYSTEM.format(
+                    dev_name=dev.name, dev_tagline=dev.tagline,
+                )
+                fix_task = DEV_INTEGRATION_FIX_TASK.format(
+                    full_context=self.board.full_context_header(),
+                    approved_interfaces=self.board.approved_interfaces(),
+                    dependency_context=dep_ctx,
+                    filename=source_name,
+                    current_code=entry.code,
+                    test_output=test_output,
+                )
+
+                self._set_memory(dev.id)
+                code = dev.think(self.board, fix_task, system, self.client)
+                self._clear_memory()
+                self.ui.flush_events()
+
+                code = self._clean_code(code)
+                try:
+                    code = validate_code_output(code, source_name)
+                except ValueError as e:
+                    logger.warning(
+                        "Integration fix validation failed for %s: %s",
+                        source_name, e,
+                    )
+                    continue
+
+                if code.strip() != entry.code.strip():
+                    entry.code = code
+                    all_files[source_name] = code
+                    self.board.save_source_file(entry)
+                    any_fixed = True
+                    self.board.emit(
+                        EventType.SPEAKING, dev.id,
+                        f"🔧 Fixed {source_name} for integration",
+                    )
+                    self._record_pattern(
+                        dev.id,
+                        f"Integration fix applied to {source_name}",
+                        context="cross-file test failure resolved",
+                    )
+
+            if not any_fixed:
+                self.board.emit(
+                    EventType.SPEAKING, "system",
+                    "⚠️ Integration fix round produced no changes"
+                    " — stopping fix loop",
+                )
+                self.ui.flush_events()
+                break
+
+        return all_files
+
+    # ─────────────────────────────────────────────────────────────────────────
     #  Phase 9: Integration
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -1951,6 +2206,17 @@ class EPTCrew:
                 self.board.emit(EventType.SPEAKING, "system",
                                 f"🧪 Sandbox integration: {status}")
                 self.ui.flush_events()
+
+                # ── Multi-file test execution + fix loop ────────────────
+                if not sb_result.success:
+                    all_files = self._integration_test_fix_loop(all_files)
+                    # Re-run after fixes to get final status
+                    sb_result = run_code_checks(all_files)
+                    status = "PASS ✓" if sb_result.success else "FAIL ✗"
+                    self.board.emit(EventType.SPEAKING, "system",
+                                    f"🧪 Sandbox integration (post-fix): {status}")
+                    self.ui.flush_events()
+
                 sandbox_section = (
                     "CODE EXECUTION RESULTS (files were actually run in a sandbox):\n"
                     f"Status: {status}\n{sb_result.output}\n"

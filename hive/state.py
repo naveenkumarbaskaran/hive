@@ -213,6 +213,7 @@ class FileEntry:
     is_frontend: bool = False
     deferred_issues: list[Issue] = field(default_factory=list)
     assigned_dev: str = ""  # which dev agent built this
+    test_output: str = ""   # last pytest output (from test execution feedback loop)
 
 
 @dataclass

@@ -23,7 +23,7 @@ No LangChain. No CrewAI. Just Python 3.12+, httpx, and structured prompts.
 | CLI command | `hive` |
 | Entry point | `run_hive.py` → `main()` |
 | Core package | `hive/` (12 modules + plugins subpackage) |
-| Tests | `tests/test_hive.py` (~466), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 646 total |
+| Tests | `tests/test_hive.py` (~497), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 677 total |
 | Python | ≥ 3.12 |
 | Build system | Hatchling |
 | Only runtime dep | `httpx` |
@@ -42,7 +42,7 @@ hive/                     ← repo root
 │   ├── llm_client.py     ← LLMClient, ModelTier, auto-detect backend, retry+escalate
 │   ├── memory.py         ← 3-tier memory: Agent → Team → Global
 │   ├── prompts.py        ← system prompts + task templates for all agents
-│   ├── sandbox.py        ← Code execution loop: syntax check, import check, test runner
+│   ├── sandbox.py        ← Code execution loop: syntax check, import check, test runner, multi-file test execution
 │   ├── state.py          ← Blackboard, Events, checkpoints, save/load
 │   ├── telemetry.py      ← CostTracker, BudgetExceeded, estimate_cost, model_context_window
 │   ├── ui.py             ← ANSI terminal UI, sign-off prompts, progress dashboard
@@ -54,7 +54,7 @@ hive/                     ← repo root
 ├── run_hive.py           ← CLI entry point (argparse)
 ├── llm_client.py         ← backward-compat shim → hive/llm_client.py
 ├── tests/
-│   ├── test_hive.py      ← ~466 unit tests (NO real LLM calls)
+│   ├── test_hive.py      ← ~497 unit tests (NO real LLM calls)
 │   ├── test_hardening.py ← hardening + integration tests
 │   └── test_plugins.py   ← plugin system tests (~92)
 ├── projects/             ← runtime output (gitignored)
@@ -116,6 +116,8 @@ ruff format hive/ tests/ run_hive.py
 - **Quality Playbook** (`hive/prompts.py`): OWASP security checklist, SOLID principles, DPP/PII checks, input validation, and secret hygiene injected into all agent prompts
 - **PII Scanner** (`hive/sandbox.py`): `scan_pii()` regex-based static analysis detects hardcoded secrets, PII in logs, eval/exec, unsafe deserialization, and shell injection
 - **Regression Test Generation** (`hive/prompts.py` + `hive/crew.py`): Quinn auto-generates executable regression test suite including boundary, negative, security, and PII tests
+- **Test Execution Feedback Loop** (`hive/sandbox.py` + `hive/crew.py`): `run_test_in_context()` stages all project files and runs real pytest during build; `_test_execution_check()` feeds failures back to dev for fixing (up to `MAX_TEST_FIX_ATTEMPTS` rounds)
+- **Integration Test Fix Loop** (`hive/crew.py`): `_integration_test_fix_loop()` isolates per-file test failures after `run_code_checks`, routes to responsible devs, and re-runs up to `MAX_INTEGRATION_FIXES` rounds
 - **Plugin System** (`hive/plugins/`): optional protocol-based plugins for knowledge, guidelines, systems, test data, lifecycle hooks
 
 ## Key Design Decisions — DO NOT VIOLATE
@@ -164,6 +166,8 @@ ruff format hive/ tests/ run_hive.py
 | `HIVE_RATE_LIMIT_COOLDOWN` | `30` | Seconds to wait before retrying rate-limited files |
 | `HIVE_REQUEST_PACE_MS` | `200` | Minimum milliseconds between LLM requests (0 to disable) |
 | `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
+| `HIVE_MAX_INTEGRATION_FIXES` | `2` | Max rounds of integration test fix loop |
+| `HIVE_MAX_TEST_FIX_ATTEMPTS` | `2` | Max attempts to fix test failures during build |
 
 ## Common Tasks for Claude
 
