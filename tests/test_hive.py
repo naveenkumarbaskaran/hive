@@ -4099,10 +4099,11 @@ class TestReviewContractSpec:
         assert "{contract_spec}" in QUINN_REVIEW_TASK
 
     def test_quinn_review_task_has_review_rules(self):
-        """QUINN_REVIEW_TASK should include rules about not failing for unapproved deps."""
+        """QUINN_REVIEW_TASK should include dep warning before the code block."""
         from hive.prompts import QUINN_REVIEW_TASK
-        assert "DO NOT fail" in QUINN_REVIEW_TASK
-        assert "upstream dependency" in QUINN_REVIEW_TASK or "approved" in QUINN_REVIEW_TASK
+        assert "CRITICAL" in QUINN_REVIEW_TASK
+        # The dep warning should exist and be about approved/contract deps
+        assert "approved" in QUINN_REVIEW_TASK.lower() or "contract" in QUINN_REVIEW_TASK.lower()
 
     def test_quinn_review_task_formats_with_contract_spec(self):
         """QUINN_REVIEW_TASK should format cleanly with contract_spec kwarg."""
@@ -4174,6 +4175,170 @@ class TestAmendmentsInContext:
         ctx = board.full_context_header()
         assert "Fix User model" in ctx
         assert "Add rate limiting" in ctx
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Dep-Blocker Downgrade Guard Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestDowngradeDepBlockers:
+    """Tests for EPTCrew._downgrade_dep_blockers() static method."""
+
+    def test_downgrades_unapproved_dep_blocker(self):
+        """Should downgrade a blocker about an unapproved contract dep."""
+        issues = [
+            Issue(severity="blocker", code="",
+                  description="Missing dependency: validators.py has not been approved yet"),
+        ]
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            issues, "FAIL",
+            contract_deps={"validators.py"},
+            approved_files={"models.py"},
+        )
+        assert verdict == "PASS_WITH_NOTES"
+        assert issues[0].severity == "warning"
+        assert "auto-downgraded" in issues[0].description
+
+    def test_keeps_real_blockers(self):
+        """Should not downgrade blockers unrelated to deps."""
+        issues = [
+            Issue(severity="blocker", code="",
+                  description="Missing return statement in add() function"),
+        ]
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            issues, "FAIL",
+            contract_deps={"validators.py"},
+            approved_files={"models.py"},
+        )
+        assert verdict == "FAIL"
+        assert issues[0].severity == "blocker"
+
+    def test_mixed_blockers_keeps_fail(self):
+        """If some blockers are real and some are dep-related, keep FAIL."""
+        issues = [
+            Issue(severity="blocker", code="",
+                  description="validators.py hasn't been approved yet"),
+            Issue(severity="blocker", code="",
+                  description="Missing error handling in divide()"),
+        ]
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            issues, "FAIL",
+            contract_deps={"validators.py"},
+            approved_files=set(),
+        )
+        assert verdict == "FAIL"  # real blocker remains
+        assert issues[0].severity == "warning"  # dep blocker downgraded
+        assert issues[1].severity == "blocker"  # real blocker kept
+
+    def test_no_change_on_pass(self):
+        """Should not touch issues if verdict is already PASS."""
+        issues = [
+            Issue(severity="warning", code="", description="Minor style issue"),
+        ]
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            issues, "PASS",
+            contract_deps={"validators.py"},
+            approved_files=set(),
+        )
+        assert verdict == "PASS"
+        assert issues[0].severity == "warning"
+
+    def test_no_change_when_dep_already_approved(self):
+        """Should not downgrade if the dep IS already approved."""
+        issues = [
+            Issue(severity="blocker", code="",
+                  description="validators.py has not been approved yet"),
+        ]
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            issues, "FAIL",
+            contract_deps={"validators.py"},
+            approved_files={"validators.py"},  # already approved!
+        )
+        assert verdict == "FAIL"
+        assert issues[0].severity == "blocker"
+
+    def test_no_change_when_no_contract_deps(self):
+        """Should not downgrade if the file has no contract deps."""
+        issues = [
+            Issue(severity="blocker", code="",
+                  description="missing_module.py not approved"),
+        ]
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            issues, "FAIL",
+            contract_deps=set(),
+            approved_files=set(),
+        )
+        assert verdict == "FAIL"
+
+    def test_multiple_dep_blockers_all_downgraded(self):
+        """All dep-related blockers should be downgraded."""
+        issues = [
+            Issue(severity="blocker", code="",
+                  description="validators.py hasn't been approved"),
+            Issue(severity="blocker", code="",
+                  description="Code imports from models.py which is not yet approved"),
+        ]
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            issues, "FAIL",
+            contract_deps={"validators.py", "models.py"},
+            approved_files=set(),
+        )
+        assert verdict == "PASS_WITH_NOTES"
+        assert all(i.severity == "warning" for i in issues)
+
+    def test_matches_dep_name_without_extension(self):
+        """Should match dep name even if .py is stripped in the description."""
+        issues = [
+            Issue(severity="blocker", code="",
+                  description="Missing dependency: validators has not been approved"),
+        ]
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            issues, "FAIL",
+            contract_deps={"validators.py"},
+            approved_files=set(),
+        )
+        assert verdict == "PASS_WITH_NOTES"
+        assert issues[0].severity == "warning"
+
+    def test_empty_issues(self):
+        """Should handle empty issues list gracefully."""
+        verdict, issues = EPTCrew._downgrade_dep_blockers(
+            [], "FAIL",
+            contract_deps={"validators.py"},
+            approved_files=set(),
+        )
+        assert verdict == "FAIL"
+        assert issues == []
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Quinn Prompt Strengthening Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestQuinnPromptStrengthening:
+    """Tests for the strengthened unapproved-dep rules in Quinn's prompts."""
+
+    def test_system_prompt_has_dep_rule(self):
+        """Quinn's system prompt should now include the unapproved-dep rule."""
+        assert "UNAPPROVED DEPENDENCIES" in QUINN_SYSTEM
+        assert "not yet approved" in QUINN_SYSTEM.lower()
+        assert "not a defect" in QUINN_SYSTEM.lower() or "NOT a defect" in QUINN_SYSTEM
+
+    def test_task_prompt_has_critical_warning(self):
+        """Review task should have a CRITICAL warning before the code block."""
+        from hive.prompts import QUINN_REVIEW_TASK
+        # The CRITICAL warning should appear BEFORE the code block
+        critical_idx = QUINN_REVIEW_TASK.find("CRITICAL")
+        code_idx = QUINN_REVIEW_TASK.find("FILE UNDER REVIEW")
+        assert critical_idx > 0
+        assert critical_idx < code_idx
+
+    def test_task_prompt_no_duplicate_rules(self):
+        """Task prompt should not have the old 'IMPORTANT REVIEW RULES' section."""
+        from hive.prompts import QUINN_REVIEW_TASK
+        assert "IMPORTANT REVIEW RULES" not in QUINN_REVIEW_TASK
 
 
 if __name__ == "__main__":

@@ -377,6 +377,12 @@ You review code files for correctness, security vulnerabilities, edge cases,
 and adherence to the contract. You are thorough but fair — you distinguish
 between blockers and nice-to-haves.
 
+CRITICAL RULE — UNAPPROVED DEPENDENCIES:
+Files are built in dependency-layer order. If a file imports from a module that
+is declared in the contract but not yet approved, that is NOT a defect — the
+contract guarantees it will be built. Never mark this as a blocker or fail
+a file for this reason.
+
 For each file you review, output EXACTLY:
 VERDICT: PASS | FAIL | PASS_WITH_NOTES
 
@@ -403,19 +409,19 @@ APPROVED FILES SO FAR:
 CONTRACT SPEC FOR THIS FILE:
 {contract_spec}
 
+⚠️  CRITICAL — READ BEFORE REVIEWING:
+Dependencies listed in the contract WILL be built — they are guaranteed to exist.
+If this file imports from a contract-declared dependency that isn't approved yet,
+that is NORMAL (it's in a later build layer) and must NOT be treated as a blocker
+or cause a FAIL verdict. Only flag issues with the file's OWN code.
+
 FILE UNDER REVIEW: {filename}
 ```
 {code}
 ```
 
 Review this file against the contract and PRD. Be precise about what's wrong.
-
-IMPORTANT REVIEW RULES:
-- Validate against the CONTRACT SPEC above, not just approved files.
-- If a file imports from a dependency that is declared in the contract but not yet
-  approved, that is NOT a blocker — the contract guarantees it will exist.
-- Focus on: correct exports, type signatures, error handling, and contract compliance.
-- DO NOT fail a file solely because an upstream dependency hasn't been approved yet.
+Focus on: correct exports, type signatures, error handling, and contract compliance.
 """
 
 

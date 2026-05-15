@@ -1635,6 +1635,59 @@ class EPTCrew:
 
         return "\n".join(parts)
 
+    @staticmethod
+    def _downgrade_dep_blockers(
+        issues: list[Issue],
+        verdict: str,
+        contract_deps: set[str],
+        approved_files: set[str],
+    ) -> tuple[str, list[Issue]]:
+        """Downgrade blocker issues that only complain about unapproved contract deps.
+
+        If a reviewer flags a FAIL solely because a dependency hasn't been approved
+        yet, but that dependency IS declared in the contract, the blocker is
+        downgraded to a warning and the verdict recalculated.
+        """
+        if verdict != "FAIL":
+            return verdict, issues
+
+        # Names that are in the contract but not yet approved
+        unapproved_contract = contract_deps - approved_files
+        if not unapproved_contract:
+            return verdict, issues  # nothing to downgrade
+
+        # Keywords that signal an "unapproved dependency" complaint
+        dep_keywords = (
+            "not yet approved", "not approved", "hasn't been approved",
+            "has not been approved", "not in the approved", "missing dependency",
+            "unapproved", "not yet built", "hasn't been built",
+        )
+
+        changed = False
+        for issue in issues:
+            if issue.severity != "blocker":
+                continue
+            desc_lower = issue.description.lower()
+            # Check if the issue mentions an unapproved contract dep
+            mentions_dep = any(
+                dep.lower().rstrip(".py") in desc_lower
+                or dep.lower() in desc_lower
+                for dep in unapproved_contract
+            )
+            mentions_keyword = any(kw in desc_lower for kw in dep_keywords)
+            if mentions_dep and mentions_keyword:
+                issue.severity = "warning"
+                issue.description = f"[auto-downgraded] {issue.description}"
+                changed = True
+
+        if changed:
+            # Recalculate verdict — only FAIL if blockers remain
+            has_blockers = any(i.severity == "blocker" for i in issues)
+            if not has_blockers:
+                verdict = "PASS_WITH_NOTES"
+
+        return verdict, issues
+
     def _review_file(self, fname: str, entry: FileEntry) -> tuple[str, list[Issue]]:
         """Run all applicable reviewers on a file."""
         all_issues: list[Issue] = []
@@ -1644,6 +1697,14 @@ class EPTCrew:
         contract_data = getattr(self, '_contract_cache', None) or {}
         meta = contract_data.get(fname, {})
         contract_spec = self._format_contract_spec(fname, meta)
+
+        # Precompute sets for the dep-blocker guard
+        file_deps = set(meta.get("deps", []))
+        all_contract_files = set(contract_data.keys())
+        contract_deps = file_deps & all_contract_files  # deps that ARE in contract
+        approved_files = {
+            f for f, e in self.board.registry.items() if e.approved
+        }
 
         # On large builds (>8 files), delegate to a sub-reviewer so Quinn isn't the
         # sole bottleneck. Sub-reviewers use FAST tier; Quinn does final integration pass.
@@ -1669,6 +1730,10 @@ class EPTCrew:
         resp = reviewer.think(self.board, task, QUINN_SYSTEM, self.client)
         self._clear_memory()
         verdict, issues = _parse_verdict(resp)
+        # Programmatic guard: downgrade dep-related blockers for contract deps
+        verdict, issues = self._downgrade_dep_blockers(
+            issues, verdict, contract_deps, approved_files,
+        )
         for i in issues:
             i.from_agent = reviewer.id
         all_issues.extend(issues)
@@ -1682,6 +1747,9 @@ class EPTCrew:
                 resp2 = quinn.think(self.board, task, QUINN_SYSTEM, self.client)
                 self._clear_memory()
                 v2, iss2 = _parse_verdict(resp2)
+                v2, iss2 = self._downgrade_dep_blockers(
+                    iss2, v2, contract_deps, approved_files,
+                )
                 for i in iss2:
                     i.from_agent = "quinn"
                 all_issues.extend(iss2)

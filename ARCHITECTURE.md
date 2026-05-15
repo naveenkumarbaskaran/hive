@@ -109,7 +109,7 @@ and structured prompts.
 | `hive/plugins/` | ~660 | **NEW** Optional plugin system: protocols (base.py), discovery+registry (registry.py), 4 example plugins |
 | `hive/__init__.py` | ~44 | Package exports |
 | `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo, --plugin |
-| `tests/test_hive.py` | ~4180 | ~391 unit tests (no API calls) |
+| `tests/test_hive.py` | ~4345 | ~403 unit tests (no API calls) |
 | `tests/test_hardening.py` | ~669 | ~88 hardening + integration tests |
 | `tests/test_plugins.py` | ~760 | ~92 plugin system tests |
 

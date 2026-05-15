@@ -23,7 +23,7 @@ No LangChain. No CrewAI. Just Python 3.12+, httpx, and structured prompts.
 | CLI command | `hive` |
 | Entry point | `run_hive.py` → `main()` |
 | Core package | `hive/` (12 modules + plugins subpackage) |
-| Tests | `tests/test_hive.py` (~391), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 571 total |
+| Tests | `tests/test_hive.py` (~403), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 583 total |
 | Python | ≥ 3.12 |
 | Build system | Hatchling |
 | Only runtime dep | `httpx` |
@@ -54,7 +54,7 @@ hive/                     ← repo root
 ├── run_hive.py           ← CLI entry point (argparse)
 ├── llm_client.py         ← backward-compat shim → hive/llm_client.py
 ├── tests/
-│   ├── test_hive.py      ← ~391 unit tests (NO real LLM calls)
+│   ├── test_hive.py      ← ~403 unit tests (NO real LLM calls)
 │   ├── test_hardening.py ← hardening + integration tests
 │   └── test_plugins.py   ← plugin system tests (~92)
 ├── projects/             ← runtime output (gitignored)
@@ -112,6 +112,7 @@ ruff format hive/ tests/ run_hive.py
 - **Registry-Aware Dev Context** (`hive/crew.py`): devs get full code of declared dependencies via `_dependency_context()`
 - **Contract Amendment Rebuild** (`hive/crew.py`): Judge's AMEND_CONTRACT verdict applies amendment, refreshes cache, and triggers a full rebuild of the file
 - **Contract-Aware Review** (`hive/crew.py` + `hive/prompts.py`): Quinn receives contract specs for the file under review, including dependency interfaces and amendments
+- **Dep-Blocker Guard** (`hive/crew.py`): `_downgrade_dep_blockers()` auto-downgrades FAIL verdicts from reviewers when the only blockers reference unapproved contract dependencies guaranteed to exist in later build layers
 - **Plugin System** (`hive/plugins/`): optional protocol-based plugins for knowledge, guidelines, systems, test data, lifecycle hooks
 
 ## Key Design Decisions — DO NOT VIOLATE
