@@ -15,21 +15,23 @@ through a shared Blackboard to turn a feature request into production-ready code
 ## Repository Layout
 
 ```
-hive/                     ← core Python package (10 modules)
+hive/                     ← core Python package (12 modules)
   __init__.py             ← exports + __version__
   agents.py               ← Agent dataclass, AgentRoster, DEV_POOL
   connectors.py           ← KnowledgeItem, ConnectorRegistry, git repo ingest
-  crew.py                 ← EPTCrew: 13-phase orchestrator (~1740 lines)
+  crew.py                 ← EPTCrew: 13-phase orchestrator (~2230 lines)
   hardening.py            ← atomic_write, file_lock, sanitize, budget, disk checks
   llm_client.py           ← LLMClient, ModelTier, auto-detect backend, retry+escalate
   memory.py               ← 3-tier memory: Agent → Team → Global
   prompts.py              ← system prompts + task templates for all agents
+  sandbox.py              ← Code execution loop: syntax check, import check, test runner
   state.py                ← Blackboard, Events, checkpoints, save/load
-  ui.py                   ← ANSI terminal UI, sign-off prompts, progress display
+  telemetry.py            ← CostTracker, BudgetExceeded, estimate_cost, model_context_window
+  ui.py                   ← ANSI terminal UI, sign-off prompts, progress dashboard
 run_hive.py               ← CLI entry point (argparse)
 llm_client.py             ← backward-compat shim → hive/llm_client.py
 tests/
-  test_hive.py            ← ~300 unit tests (NO real LLM calls)
+  test_hive.py            ← ~381 unit tests (NO real LLM calls)
   test_hardening.py       ← hardening + integration tests
 ```
 
@@ -46,9 +48,15 @@ tests/
 - **Blackboard** (`state.py`): single shared state, all agents read/write
 - **ModelTier** (`llm_client.py`): FAST / BALANCED / POWERFUL — agents request capability, not model names
 - **Resilient LLM** (`llm_client.py`): 5-attempt retry with tier escalation + 429 model rotation
+- **Code Execution Sandbox** (`sandbox.py`): syntax check, import check, test runner in isolated temp dir
+- **Cost Tracking** (`telemetry.py`): per-call metering, per-phase metrics, budget enforcement
+- **Self-Reflection**: dev agents self-critique code against contract before review (FAST tier)
+- **Adaptive Context**: model-aware context window budgeting (70% context / 30% task+output)
+- **Project DNA**: post-run LLM extraction of lessons → global memory for future projects
 - **Event bus**: agents emit Events, UI renders them (decoupled)
 - **Dep-layered build**: topological sort of file deps → parallel layers
 - **Memory** (`memory.py`): 3-tier learning (agent → team → global)
+- **Rate-limit retry**: 429-cascaded files queued for retry after cooldown
 
 ## Coding Rules — ALWAYS FOLLOW
 
@@ -101,6 +109,12 @@ make fmt           # ruff format
 | `HIVE_MAX_REVISIONS` | `3` | Max code revision cycles per file |
 | `HIVE_MAX_EVENTS` | `1000` | Max events kept in Blackboard memory |
 | `HIVE_MAX_GLOBAL_MEMORY` | `100` | Max global memory entries retained |
+| `HIVE_BUDGET_USD` | `0` (unlimited) | Max USD spend per run |
+| `HIVE_COST_PER_1K_INPUT` | model-based | Override $/1K input tokens |
+| `HIVE_COST_PER_1K_OUTPUT` | model-based | Override $/1K output tokens |
+| `HIVE_SANDBOX_TIMEOUT` | `30` | Max seconds per sandbox execution |
+| `HIVE_SANDBOX_ENABLED` | `1` | Set `0` to disable code execution sandbox |
+| `HIVE_RATE_LIMIT_COOLDOWN` | `30` | Seconds to wait before retrying rate-limited files |
 
 ## Common Tasks
 

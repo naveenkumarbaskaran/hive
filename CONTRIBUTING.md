@@ -20,7 +20,7 @@ make test
 
 ```
 hive/
-├── hive/                  # Core package
+├── hive/                  # Core package (12 modules)
 │   ├── __init__.py       #   Package exports + version
 │   ├── llm_client.py     #   Pluggable LLM connector
 │   ├── agents.py         #   Agent definitions + personalities
@@ -30,8 +30,10 @@ hive/
 │   ├── ui.py             #   Terminal UI (ANSI)
 │   ├── connectors.py     #   External knowledge ingestion
 │   ├── memory.py         #   3-tier learning memory
-│   └── hardening.py      #   Production utilities
-├── tests/                # Test suite
+│   ├── hardening.py      #   Production utilities
+│   ├── sandbox.py        #   Code execution loop (syntax, import, test)
+│   └── telemetry.py      #   Cost tracking, budget enforcement
+├── tests/                # Test suite (~381 tests)
 │   ├── test_hive.py       #   Core functionality tests
 │   └── test_hardening.py #   Hardening & safety tests
 ├── run_hive.py            # CLI entry point
@@ -51,6 +53,8 @@ hive/
    - Place prompt templates in `hive/prompts.py`
    - Place state/data structures in `hive/state.py`
    - Use `hive/hardening.py` utilities for file I/O
+   - Use `hive/sandbox.py` for code execution validation
+   - Use `hive/telemetry.py` for cost tracking integration
 
 3. **Add tests** in `tests/`:
    - Tests must not make real LLM API calls

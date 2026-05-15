@@ -72,6 +72,19 @@ and structured prompts.
                  │  OpenAI compat   │
                  └──────────────────┘
                             │
+         ┌───────────────┼───────────────┐
+         │                │               │
+         ▼                ▼               ▼
+┌───────────────┐  ┌──────────────┐  ┌──────────────┐
+│ sandbox.py     │  │ telemetry.py  │  │ hardening.py  │
+│               │  │              │  │              │
+│ Sandbox class │  │ CostTracker  │  │ atomic_write │
+│ syntax check  │  │ BudgetGuard  │  │ file_lock    │
+│ import check  │  │ PhaseMetrics │  │ sanitize     │
+│ test runner   │  │ pricing tbl  │  │ disk checks  │
+│ safe env      │  │ context win  │  │ budget ctx   │
+└───────────────┘  └──────────────┘  └──────────────┘
+                            │
                             ▼
                     LLM Backend
               (Hyperspace / Anthropic /
@@ -82,17 +95,21 @@ and structured prompts.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `hive/llm_client.py` | ~626 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + 429 model-pool rotation. |
-| `hive/__init__.py` | ~20 | Package exports |
-| `hive/connectors.py` | ~570 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest |
-| `hive/memory.py` | ~440 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
-| `hive/state.py` | ~725 | Blackboard, UserProfile, LogEntry, Events, knowledge_base, repo_analysis, uat_doc, sit_doc, handover_doc, checkpoint save/load |
-| `hive/agents.py` | ~340 | Agent dataclass with logbook+memory-wired think(), AgentRoster (10 named agents), DEV_POOL, REVIEWER_POOL |
-| `hive/prompts.py` | ~1094 | System prompts + task templates for all agent roles including UAT, SIT, Handover, Packaging, DM |
-| `hive/ui.py` | ~860 | ANSI terminal rendering, sign-off prompts, logbook summary with model-switch stats, delivery summary |
-| `hive/crew.py` | ~1742 | 13-phase orchestrator: parallel build (ThreadPoolExecutor), test docs, packaging, handover, delivery checklist |
-| `run_hive.py` | ~100 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo |
-| `tests/test_hive.py` | ~1876 | 291 unit tests (no API calls) |
+| `hive/crew.py` | ~2230 | 13-phase orchestrator: parallel build, sandbox loop, self-reflection, cost tracking, project DNA extraction |
+| `hive/prompts.py` | ~1200 | System prompts + task templates for all agent roles including self-reflection, project DNA |
+| `hive/ui.py` | ~1130 | ANSI terminal rendering, sign-off prompts, progress dashboard with live cost, delivery summary |
+| `hive/state.py` | ~740 | Blackboard, UserProfile, LogEntry, Events, adaptive context header, checkpoint save/load |
+| `hive/llm_client.py` | ~635 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + 429 model-pool rotation. |
+| `hive/connectors.py` | ~580 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest |
+| `hive/hardening.py` | ~478 | atomic_write, file_lock, sanitize, budget, disk checks |
+| `hive/memory.py` | ~456 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
+| `hive/sandbox.py` | ~375 | **NEW** Code execution loop: Sandbox, syntax check, import check, test runner, safe subprocess |
+| `hive/agents.py` | ~338 | Agent dataclass with logbook+memory-wired think(), AgentRoster (10 named agents), DEV_POOL, REVIEWER_POOL |
+| `hive/telemetry.py` | ~317 | **NEW** CostTracker, BudgetExceeded, estimate_cost, model_context_window, per-phase PhaseMetrics |
+| `hive/__init__.py` | ~44 | Package exports |
+| `run_hive.py` | ~143 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo |
+| `tests/test_hive.py` | ~3230 | 381 unit tests (no API calls) |
+| `tests/test_hardening.py` | ~669 | Hardening + integration tests |
 
 ## Key Design Patterns
 
@@ -196,7 +213,123 @@ Each layer runs with `ThreadPoolExecutor(max_workers=min(len(layer), 4))`.
 A `threading.Lock` protects writes to `board.registry` and `board.all_deferred`.
 `_save()` (checkpoint) is called once per layer after all futures complete.
 
-Each file goes through: **Generate → Review → (Revise?) → Approve/Escalate**
+Each file goes through: **Generate → Sandbox → Self-Reflect → Review → (Revise?) → Approve/Escalate**
+
+### 6b. Code Execution Sandbox
+Before any human or agent review, every generated Python file passes through
+a secure sandbox (`hive/sandbox.py`):
+
+```
+Dev generates code
+      ↓
+Sandbox: syntax check (py_compile)
+      ↓ pass?
+Sandbox: import check (can module load?)
+      ↓ pass?
+Sandbox: test execution (if test files exist)
+      ↓ fail?
+Dev receives sandbox feedback → revises (up to 2 rounds)
+      ↓ still failing?
+Proceed to review anyway (sandbox is advisory, not blocking)
+```
+
+**Sandbox safety:**
+- Runs in an isolated temp directory (auto-cleaned)
+- API keys and secrets stripped from environment
+- Process timeout enforced (default 30s, `HIVE_SANDBOX_TIMEOUT`)
+- Output truncated to prevent prompt bloat
+- Path traversal in filenames blocked
+- Can be disabled entirely: `HIVE_SANDBOX_ENABLED=0`
+
+### 6c. Self-Reflection Loop
+After sandbox (before review), each Python file goes through a **self-reflection**
+step where the dev agent critiques its own code against the contract:
+
+```
+Dev code passes sandbox
+      ↓
+Dev (FAST tier): "Self-critique this code against the contract.
+                  What's missing? What could break?"
+      ↓ suggests improvements?
+Dev rewrites (single pass) → validated before accepting
+      ↓
+Proceeds to reviewer
+```
+
+This catches low-hanging issues cheaply (FAST tier) without consuming reviewer
+budget. The reflection prompt includes the contract spec, expected exports,
+and dependency context.
+
+### 6d. Cost Tracking & Budget Enforcement
+Every LLM call is metered by `CostTracker` (`hive/telemetry.py`), which
+accumulates tokens × model-specific pricing:
+
+```
+EPTCrew.run()
+  ├── cost_tracker.start_phase("research")
+  │     ├── Agent.think() → LLMResponse (input_tokens, output_tokens)
+  │     └── cost_tracker.record_call(model, in_tok, out_tok)
+  ├── cost_tracker.end_phase() → PhaseMetrics
+  │
+  └── After all phases:
+        ├── board._cost_tracker → ui.final_summary() shows cost breakdown
+        └── project_dna.json includes cost summary
+```
+
+**Budget guard:** if `HIVE_BUDGET_USD` is set (e.g., `5.0`), the tracker
+raises `BudgetExceeded` when the running total exceeds the limit. The pipeline
+saves a checkpoint and exits gracefully — resume picks up where it left off.
+
+**Model pricing:** built-in pricing table covers 15+ models (Claude, GPT-4,
+Gemini, Llama, Mistral). Unknown models use a safe default. Users can
+override with `HIVE_COST_PER_1K_INPUT` / `HIVE_COST_PER_1K_OUTPUT`.
+
+### 6e. Adaptive Context Window
+`full_context_header()` in `state.py` now accepts a `max_tokens` parameter
+derived from the model's known context window. The method allocates 70% of
+the budget for context (PRD, architecture, contract, research) and reserves
+30% for task prompt + output. This prevents context overflow when using
+smaller-window models.
+
+`model_context_window()` in `telemetry.py` resolves the model name to its
+known window size (200K for Claude, 128K for GPT-4o, etc.) using substring
+matching to handle prefixed model names.
+
+### 6f. Project DNA Extraction
+After the pipeline completes, a post-run step extracts **Project DNA** —
+structured lessons learned:
+
+```python
+# hive/crew.py → _extract_project_dna()
+LLM prompt: "Analyze the build logbook and extract:
+  - stack_patterns: what worked
+  - common_mistakes: what failed repeatedly
+  - architecture_lessons: design insights
+  - review_insights: quality patterns"
+
+→ projects/<slug>/docs/project_dna.json
+→ fed into global memory for future projects
+```
+
+This makes each run contribute to the system's collective intelligence.
+
+### 6g. Rate-Limit Retry & Dropped File Recovery
+Files that fail due to 429 rate-limit cascades during build are not silently
+dropped. Instead, they're queued for retry after a cooldown:
+
+```
+Build phase:
+  Layer N files built in parallel → some hit 429 cascade
+      ↓
+  _retry_rate_limited_files(): wait HIVE_RATE_LIMIT_COOLDOWN sec → retry
+      ↓ still failing?
+  File marked as DROPPED with clear skip_reason
+  Delivery summary shows resume command
+```
+
+**Single-model warning:** if `LLM_FALLBACK_MODELS` is not configured and
+only one model is available, the build phase emits a warning and increases
+backoff base (3.0s instead of default) since model rotation is not possible.
 
 **Quinn sub-reviewer delegation:** on builds with more than 8 files, Quinn
 spawns ephemeral FAST-tier sub-reviewer agents (Remy, River, Robin, Riley) —
@@ -439,14 +572,19 @@ User Feature Request
         │
         ▼
    For each dep layer (parallel within layer):
-     Dev (POWERFUL) ──► Code ──► Quinn/sub-reviewer (FAST) review
+     Dev (POWERFUL) ─► Code ─► Sandbox (syntax+import check)
+                                  ├── FAIL → Dev revises from sandbox feedback (up to 2x)
+                                  └── PASS → Self-Reflect (FAST tier self-critique)
+                                              │
+                                              ▼
+                              Quinn/sub-reviewer (FAST) review
                                   ├── PASS → save to src/
                                   ├── PASS_WITH_NOTES → save + defer
                                   ├── FAIL → revise (up to 3x)
                                   └── FAIL 3x → Judge (POWERFUL)
         │
         ▼
-   Quinn (FAST) ──► Integration review (all files together)
+   Quinn (FAST) ─► Integration review (all files + sandbox results)
         │
         ▼
    Alex (FAST) ──► UAT.md  (pseudo-user scenarios, copy-paste ready)
@@ -458,11 +596,15 @@ User Feature Request
    Penny (BALANCED) ──► Packaging artifacts  (pyproject.toml / package.json / go.mod …)
    Morgan (BALANCED) ──► delivery_checklist.md  (final checklist + crew sign-offs)
         │
-        ▼
-   projects/<slug>/
+        ▼   _extract_project_dna() ─► project_dna.json  (lessons → global memory)
+   _sync_costs() ─► cost summary in logbook + final_summary
+        │
+        ▼   projects/<slug>/
      ├── docs/     (PRD, arch, contract, research, interviews, sign-offs,
-     │              release notes, UAT, SIT, Handover, delivery checklist)
+     │              release notes, UAT, SIT, Handover, delivery checklist,
+     │              project_dna.json, logbook.json)
      ├── src/      (generated source + packaging artifacts)
+     ├── memory/   (agent learnings + team insights)
      └── checkpoints/ (board snapshots for resume)
 ```
 
@@ -482,6 +624,7 @@ projects/
       signoffs.json            # All sign-offs with attribution (who produced/reviewed)
       knowledge_base.json      # Ingested external knowledge items
       logbook.json             # Every LLM call: agent, model, tokens, retries, errors
+      project_dna.json         # Post-run extracted lessons (stack patterns, mistakes, insights)
       release_notes.md         # Final summary with parties & attribution table
       UAT.md                   # Alex: pseudo-user acceptance test scenarios
       SIT.md                   # Quinn: system integration test plan
