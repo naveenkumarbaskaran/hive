@@ -6,7 +6,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Tests](https://img.shields.io/badge/tests-583%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-646%20passing-brightgreen)
 ![Dependencies](https://img.shields.io/badge/deps-1%20(httpx)-orange)
 
 ---
@@ -416,7 +416,7 @@ make test-cov
 make lint
 ```
 
-583 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, contract amendment rebuild, dep-blocker guard, and the plugin system — all without making real API calls.
+646 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, contract amendment rebuild, dep-blocker guard, quality playbook, PII scanning, regression test generation, and the plugin system — all without making real API calls.
 
 ## Architecture
 

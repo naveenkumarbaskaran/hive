@@ -1,0 +1,22 @@
+feat: quality playbook - OWASP, SOLID, DPP/PII, regression tests
+
+Phase 1 - Prompt Enhancements (all agents):
+- Quinn: OWASP security checklist, SOLID checks, DPP/PII, complexity
+- Archie: security/data-privacy sections, contract quality fields
+- Dev: input validation, no secrets, PII safety, SOLID principles
+- Dev self-reflection: expanded from 5 to 9 quality checks
+- Integration: security, PII, SOLID, error propagation checks
+- Penny PRD: new Data Privacy and PII section
+
+Phase 2 - Contract Schema Extensions:
+- _parse_contract() handles security, data_classification, error_handling
+- _format_contract_spec() shows quality attributes when non-default
+- DEV_TASK includes security/data_classification/error_handling per file
+
+Phase 3 - New Capabilities:
+- PII Scanner: scan_pii() regex-based static analysis in sandbox.py
+- Coverage runner: Sandbox.run_coverage() with coverage.py
+- Regression test generation: Quinn generates executable test suite
+- Blackboard.pii_report field for cross-phase PII findings
+
+63 new tests (646 total) - all without real API calls

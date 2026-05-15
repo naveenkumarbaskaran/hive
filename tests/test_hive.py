@@ -4341,5 +4341,456 @@ class TestQuinnPromptStrengthening:
         assert "IMPORTANT REVIEW RULES" not in QUINN_REVIEW_TASK
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  Quality Playbook — Prompt Assertion Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestQualityPlaybookPrompts:
+    """Tests that quality checklists are present in all agent prompts."""
+
+    # ── Quinn: OWASP / Security ──────────────────────────────────────────
+
+    def test_quinn_has_owasp_checklist(self):
+        assert "OWASP" in QUINN_SYSTEM
+        assert "injection" in QUINN_SYSTEM.lower()
+        assert "XSS" in QUINN_SYSTEM or "xss" in QUINN_SYSTEM.lower()
+
+    def test_quinn_has_path_traversal_check(self):
+        assert "path traversal" in QUINN_SYSTEM.lower()
+
+    def test_quinn_has_ssrf_check(self):
+        assert "SSRF" in QUINN_SYSTEM
+
+    def test_quinn_has_deserialization_check(self):
+        assert "pickle" in QUINN_SYSTEM.lower() or "deserialization" in QUINN_SYSTEM.lower()
+
+    # ── Quinn: SOLID / Design Quality ────────────────────────────────────
+
+    def test_quinn_has_solid_checks(self):
+        assert "SOLID" in QUINN_SYSTEM
+        assert "SRP" in QUINN_SYSTEM
+        assert "OCP" in QUINN_SYSTEM
+
+    def test_quinn_has_complexity_check(self):
+        assert "O(n" in QUINN_SYSTEM or "complexity" in QUINN_SYSTEM.lower()
+
+    def test_quinn_has_pattern_verification(self):
+        assert "Factory" in QUINN_SYSTEM or "pattern" in QUINN_SYSTEM.lower()
+
+    # ── Quinn: DPP / PII ─────────────────────────────────────────────────
+
+    def test_quinn_has_pii_checks(self):
+        assert "PII" in QUINN_SYSTEM
+        assert "log" in QUINN_SYSTEM.lower()
+
+    def test_quinn_has_data_privacy_section(self):
+        assert "DATA PRIVACY" in QUINN_SYSTEM or "DPP" in QUINN_SYSTEM
+
+    # ── Quinn: Review task includes quality focus ────────────────────────
+
+    def test_quinn_review_task_mentions_security(self):
+        from hive.prompts import QUINN_REVIEW_TASK
+        assert "security" in QUINN_REVIEW_TASK.lower()
+
+    def test_quinn_review_task_mentions_solid(self):
+        from hive.prompts import QUINN_REVIEW_TASK
+        assert "SOLID" in QUINN_REVIEW_TASK
+
+    # ── Archie: Security + DPP in architecture ───────────────────────────
+
+    def test_archie_has_security_section(self):
+        assert "Security" in ARCHIE_SYSTEM or "security" in ARCHIE_SYSTEM
+        assert "threat model" in ARCHIE_SYSTEM.lower()
+
+    def test_archie_has_data_privacy(self):
+        assert "Data privacy" in ARCHIE_SYSTEM or "data privacy" in ARCHIE_SYSTEM.lower()
+        assert "PII" in ARCHIE_SYSTEM or "pii" in ARCHIE_SYSTEM.lower()
+
+    def test_archie_contract_has_security_field(self):
+        assert "security:" in ARCHIE_SYSTEM
+
+    def test_archie_contract_has_data_classification(self):
+        assert "data_classification:" in ARCHIE_SYSTEM
+
+    def test_archie_contract_has_error_handling(self):
+        assert "error_handling:" in ARCHIE_SYSTEM
+
+    def test_archie_has_solid_mention(self):
+        assert "SRP" in ARCHIE_SYSTEM or "SOLID" in ARCHIE_SYSTEM
+
+    def test_archie_has_dependency_injection(self):
+        assert "dependency injection" in ARCHIE_SYSTEM.lower() or "inject" in ARCHIE_SYSTEM.lower()
+
+    # ── Dev: Security + Validation rules ─────────────────────────────────
+
+    def test_dev_has_input_validation_rule(self):
+        from hive.prompts import DEV_SYSTEM
+        assert "Input validation" in DEV_SYSTEM or "input validation" in DEV_SYSTEM.lower()
+
+    def test_dev_has_no_hardcoded_secrets(self):
+        from hive.prompts import DEV_SYSTEM
+        assert "hardcoded" in DEV_SYSTEM.lower()
+        assert "secret" in DEV_SYSTEM.lower() or "password" in DEV_SYSTEM.lower()
+
+    def test_dev_has_pii_safety(self):
+        from hive.prompts import DEV_SYSTEM
+        assert "PII" in DEV_SYSTEM
+        assert "log" in DEV_SYSTEM.lower()
+
+    def test_dev_has_no_dangerous_functions(self):
+        from hive.prompts import DEV_SYSTEM
+        assert "eval()" in DEV_SYSTEM
+        assert "pickle" in DEV_SYSTEM.lower()
+
+    def test_dev_has_solid_principles(self):
+        from hive.prompts import DEV_SYSTEM
+        assert "SOLID" in DEV_SYSTEM or "SRP" in DEV_SYSTEM
+
+    def test_dev_has_path_safety(self):
+        from hive.prompts import DEV_SYSTEM
+        assert "path traversal" in DEV_SYSTEM.lower() or "path safety" in DEV_SYSTEM.lower()
+
+    # ── Dev Self-Reflection: expanded checks ─────────────────────────────
+
+    def test_self_reflect_has_security_check(self):
+        from hive.prompts import DEV_SELF_REFLECT_TASK
+        assert "Security" in DEV_SELF_REFLECT_TASK or "injection" in DEV_SELF_REFLECT_TASK.lower()
+
+    def test_self_reflect_has_pii_check(self):
+        from hive.prompts import DEV_SELF_REFLECT_TASK
+        assert "PII" in DEV_SELF_REFLECT_TASK
+
+    def test_self_reflect_has_solid_check(self):
+        from hive.prompts import DEV_SELF_REFLECT_TASK
+        assert "SOLID" in DEV_SELF_REFLECT_TASK or "single responsibility" in DEV_SELF_REFLECT_TASK.lower()
+
+    def test_self_reflect_has_error_handling_check(self):
+        from hive.prompts import DEV_SELF_REFLECT_TASK
+        assert "bare" in DEV_SELF_REFLECT_TASK.lower() or "except" in DEV_SELF_REFLECT_TASK.lower()
+
+    # ── Integration: expanded checks ─────────────────────────────────────
+
+    def test_integration_has_security_check(self):
+        from hive.prompts import INTEGRATION_SYSTEM
+        assert "Security" in INTEGRATION_SYSTEM or "security" in INTEGRATION_SYSTEM.lower()
+
+    def test_integration_has_pii_check(self):
+        from hive.prompts import INTEGRATION_SYSTEM
+        assert "PII" in INTEGRATION_SYSTEM or "Sensitive" in INTEGRATION_SYSTEM
+
+    def test_integration_has_error_propagation(self):
+        from hive.prompts import INTEGRATION_SYSTEM
+        assert "error" in INTEGRATION_SYSTEM.lower()
+
+    # ── Penny PRD: DPP section ───────────────────────────────────────────
+
+    def test_penny_prd_has_data_privacy_section(self):
+        from hive.prompts import PENNY_PRD_SYSTEM
+        assert "Data Privacy" in PENNY_PRD_SYSTEM or "PII" in PENNY_PRD_SYSTEM
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 2 — Contract Schema Extension Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestContractSchemaExtensions:
+    """Tests for the extended contract fields: security, data_classification, error_handling."""
+
+    CONTRACT_WITH_QUALITY = """\
+## ARCHITECTURE
+Something here.
+
+```contract
+FILES:
+  exceptions.py:
+    purpose: Custom error types
+    deps: []
+    exports: [ValidationError, NotFoundError]
+    patterns: []
+    security: none
+    data_classification: internal
+    error_handling: typed exceptions
+    is_frontend: false
+  api.py:
+    purpose: REST API routes
+    deps: [exceptions.py]
+    exports: [app]
+    patterns: [Repository]
+    security: input_validation, rate_limiting
+    data_classification: pii
+    error_handling: catch-and-wrap with safe messages
+    is_frontend: false
+  models.py:
+    purpose: Data models
+    deps: []
+    exports: [User]
+    patterns: [Dataclass]
+    is_frontend: false
+```
+"""
+
+    def test_parse_security_field(self):
+        files = _parse_contract(self.CONTRACT_WITH_QUALITY)
+        assert files["api.py"]["security"] == "input_validation, rate_limiting"
+        assert files["exceptions.py"]["security"] == "none"
+
+    def test_parse_data_classification_field(self):
+        files = _parse_contract(self.CONTRACT_WITH_QUALITY)
+        assert files["api.py"]["data_classification"] == "pii"
+        assert files["exceptions.py"]["data_classification"] == "internal"
+
+    def test_parse_error_handling_field(self):
+        files = _parse_contract(self.CONTRACT_WITH_QUALITY)
+        assert files["api.py"]["error_handling"] == "catch-and-wrap with safe messages"
+        assert files["exceptions.py"]["error_handling"] == "typed exceptions"
+
+    def test_defaults_for_missing_quality_fields(self):
+        """Files without quality fields should get sensible defaults."""
+        files = _parse_contract(self.CONTRACT_WITH_QUALITY)
+        # models.py has no security/data_classification/error_handling
+        assert files["models.py"]["security"] == "none"
+        assert files["models.py"]["data_classification"] == "internal"
+        assert files["models.py"]["error_handling"] == ""
+
+    def test_format_contract_spec_includes_quality(self):
+        """_format_contract_spec should show security/data_class when non-default."""
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = MagicMock()
+        crew.board.amendments = []
+        crew._contract_cache = {}
+        meta = {
+            "purpose": "REST API",
+            "deps": [],
+            "exports": ["app"],
+            "patterns": ["Repository"],
+            "security": "input_validation",
+            "data_classification": "pii",
+            "error_handling": "catch-and-wrap",
+        }
+        spec = crew._format_contract_spec("api.py", meta)
+        assert "Security: input_validation" in spec
+        assert "Data classification: pii" in spec
+        assert "Error handling: catch-and-wrap" in spec
+
+    def test_format_contract_spec_omits_defaults(self):
+        """_format_contract_spec should omit fields with default values."""
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = MagicMock()
+        crew.board.amendments = []
+        crew._contract_cache = {}
+        meta = {
+            "purpose": "Utility",
+            "deps": [],
+            "exports": ["helper"],
+            "patterns": [],
+            "security": "none",
+            "data_classification": "internal",
+            "error_handling": "",
+        }
+        spec = crew._format_contract_spec("util.py", meta)
+        assert "Security:" not in spec
+        assert "Data classification:" not in spec
+        assert "Error handling:" not in spec
+
+    def test_dev_task_has_quality_fields(self):
+        """DEV_TASK template should accept security/data_classification/error_handling."""
+        from hive.prompts import DEV_TASK
+        assert "{security}" in DEV_TASK
+        assert "{data_classification}" in DEV_TASK
+        assert "{error_handling}" in DEV_TASK
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 3 — PII Scanner Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestPIIScanner:
+    """Tests for scan_pii() and format_pii_findings()."""
+
+    def test_detects_hardcoded_password(self):
+        from hive.sandbox import scan_pii
+        files = {"config.py": 'password = "s3cret123"\n'}
+        findings = scan_pii(files)
+        assert len(findings) >= 1
+        assert any("password" in f.rule.lower() or "secret" in f.rule.lower() for f in findings)
+
+    def test_detects_pii_in_log(self):
+        from hive.sandbox import scan_pii
+        files = {"app.py": 'logger.info(f"User email: {user.email}")\n'}
+        findings = scan_pii(files)
+        assert len(findings) >= 1
+        assert any("PII" in f.rule or "log" in f.rule.lower() for f in findings)
+
+    def test_detects_eval_with_variable(self):
+        from hive.sandbox import scan_pii
+        files = {"danger.py": 'result = eval(user_input)\n'}
+        findings = scan_pii(files)
+        assert len(findings) >= 1
+        assert any("eval" in f.rule.lower() for f in findings)
+
+    def test_detects_pickle_loads(self):
+        from hive.sandbox import scan_pii
+        files = {"data.py": 'obj = pickle.loads(raw_data)\n'}
+        findings = scan_pii(files)
+        assert len(findings) >= 1
+        assert any("pickle" in f.rule.lower() for f in findings)
+
+    def test_detects_subprocess_shell_true(self):
+        from hive.sandbox import scan_pii
+        files = {"runner.py": 'subprocess.run(cmd, shell=True)\n'}
+        findings = scan_pii(files)
+        assert len(findings) >= 1
+
+    def test_clean_code_returns_empty(self):
+        from hive.sandbox import scan_pii
+        files = {"clean.py": 'def add(a: int, b: int) -> int:\n    return a + b\n'}
+        findings = scan_pii(files)
+        assert findings == []
+
+    def test_skips_test_files(self):
+        from hive.sandbox import scan_pii
+        files = {"test_app.py": 'password = "test_secret"\n'}
+        findings = scan_pii(files)
+        assert findings == []
+
+    def test_skips_comments(self):
+        from hive.sandbox import scan_pii
+        files = {"app.py": '# password = "old_secret"\n'}
+        findings = scan_pii(files)
+        assert findings == []
+
+    def test_format_clean(self):
+        from hive.sandbox import format_pii_findings
+        result = format_pii_findings([])
+        assert "CLEAN" in result
+
+    def test_format_with_findings(self):
+        from hive.sandbox import PIIFinding, format_pii_findings
+        findings = [
+            PIIFinding(filename="app.py", line_number=5,
+                       rule="Hardcoded password", snippet='password = "secret"'),
+        ]
+        result = format_pii_findings(findings)
+        assert "1 finding" in result
+        assert "app.py:5" in result
+
+    def test_detects_hardcoded_email(self):
+        from hive.sandbox import scan_pii
+        files = {"config.py": 'admin_email = "admin@example.com"\n'}
+        findings = scan_pii(files)
+        assert len(findings) >= 1
+        assert any("email" in f.rule.lower() for f in findings)
+
+    def test_multiple_findings_same_file(self):
+        from hive.sandbox import scan_pii
+        files = {"bad.py": (
+            'password = "secret"\n'
+            'result = eval(user_data)\n'
+        )}
+        findings = scan_pii(files)
+        assert len(findings) >= 2
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 3 — Regression Test Prompt Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestRegressionPrompts:
+    """Tests for REGRESSION_SYSTEM and REGRESSION_TASK prompts."""
+
+    def test_regression_system_exists(self):
+        from hive.prompts import REGRESSION_SYSTEM
+        assert "regression" in REGRESSION_SYSTEM.lower()
+        assert "pytest" in REGRESSION_SYSTEM.lower()
+
+    def test_regression_system_has_boundary_tests(self):
+        from hive.prompts import REGRESSION_SYSTEM
+        assert "boundary" in REGRESSION_SYSTEM.lower()
+
+    def test_regression_system_has_negative_tests(self):
+        from hive.prompts import REGRESSION_SYSTEM
+        assert "negative" in REGRESSION_SYSTEM.lower()
+
+    def test_regression_system_has_security_tests(self):
+        from hive.prompts import REGRESSION_SYSTEM
+        assert "security" in REGRESSION_SYSTEM.lower()
+        assert "injection" in REGRESSION_SYSTEM.lower() or "SQL" in REGRESSION_SYSTEM
+
+    def test_regression_system_has_pii_tests(self):
+        from hive.prompts import REGRESSION_SYSTEM
+        assert "PII" in REGRESSION_SYSTEM
+
+    def test_regression_task_has_pii_report(self):
+        from hive.prompts import REGRESSION_TASK
+        assert "{pii_report}" in REGRESSION_TASK
+
+    def test_regression_task_has_deferred_issues(self):
+        from hive.prompts import REGRESSION_TASK
+        assert "{deferred_issues}" in REGRESSION_TASK
+
+    def test_regression_task_formats(self):
+        from hive.prompts import REGRESSION_TASK
+        result = REGRESSION_TASK.format(
+            feature="Calculator CLI",
+            full_context="CONTEXT",
+            contract="CONTRACT",
+            approved_full="APPROVED",
+            deferred_issues="(none)",
+            pii_report="CLEAN",
+        )
+        assert "Calculator CLI" in result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 3 — Sandbox Coverage Method Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestSandboxCoverage:
+    """Tests for Sandbox.run_coverage() method."""
+
+    def test_coverage_no_test_files(self):
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("calculator.py", "def add(a, b): return a + b\n")
+            result = sb.run_coverage()
+            assert result.success
+            assert "No test files" in result.stdout or "coverage skipped" in result.stdout
+
+    def test_coverage_returns_sandbox_result(self):
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("calc.py", "def add(a, b): return a + b\n")
+            sb.add_file("test_calc.py",
+                        "from calc import add\ndef test_add(): assert add(1, 2) == 3\n")
+            result = sb.run_coverage()
+            # Whether coverage is installed or not, should return a result
+            assert hasattr(result, "success")
+            assert hasattr(result, "stdout")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 3 — Blackboard pii_report Field Test
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestBlackboardPIIReport:
+    """Tests that Blackboard has the pii_report field."""
+
+    def test_blackboard_has_pii_report(self):
+        board = Blackboard(feature="test")
+        assert hasattr(board, "pii_report")
+        assert board.pii_report == ""
+
+    def test_pii_report_is_settable(self):
+        board = Blackboard(feature="test")
+        board.pii_report = "PII scan: 2 findings"
+        assert board.pii_report == "PII scan: 2 findings"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

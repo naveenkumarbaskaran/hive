@@ -95,21 +95,21 @@ and structured prompts.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `hive/crew.py` | ~2430 | 13-phase orchestrator: parallel build, sandbox loop, self-reflection, cost tracking, contract amendment rebuild, project DNA extraction |
-| `hive/prompts.py` | ~1200 | System prompts + task templates for all agent roles including self-reflection, project DNA |
+| `hive/crew.py` | ~2572 | 13-phase orchestrator: parallel build, sandbox loop, self-reflection, cost tracking, contract amendment rebuild, PII scanning, regression test generation, project DNA extraction |
+| `hive/prompts.py` | ~1342 | System prompts + task templates for all agent roles including OWASP checklists, SOLID/PII checks, self-reflection, regression tests, project DNA |
 | `hive/ui.py` | ~1130 | ANSI terminal rendering, sign-off prompts, progress dashboard with live cost, delivery summary |
 | `hive/state.py` | ~740 | Blackboard, UserProfile, LogEntry, Events, adaptive context header, checkpoint save/load |
 | `hive/llm_client.py` | ~635 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + 429 model-pool rotation. Streaming support (on_token callback). |
 | `hive/connectors.py` | ~580 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest, URL fetch |
 | `hive/hardening.py` | ~478 | atomic_write, file_lock, sanitize, budget, disk checks |
 | `hive/memory.py` | ~456 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
-| `hive/sandbox.py` | ~440 | **NEW** Code execution loop: Sandbox, syntax check, import check, test runner, safe subprocess, context-aware imports |
+| `hive/sandbox.py` | ~600 | Code execution loop: Sandbox, syntax check, import check, test runner, PII scanner, coverage runner, safe subprocess, context-aware imports |
 | `hive/agents.py` | ~338 | Agent dataclass with logbook+memory-wired think(), AgentRoster (10 named agents), DEV_POOL, REVIEWER_POOL |
 | `hive/telemetry.py` | ~317 | **NEW** CostTracker, BudgetExceeded, estimate_cost, model_context_window, per-phase PhaseMetrics |
 | `hive/plugins/` | ~660 | **NEW** Optional plugin system: protocols (base.py), discovery+registry (registry.py), 4 example plugins |
 | `hive/__init__.py` | ~44 | Package exports |
 | `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo, --plugin |
-| `tests/test_hive.py` | ~4345 | ~403 unit tests (no API calls) |
+| `tests/test_hive.py` | ~4796 | ~466 unit tests (no API calls) |
 | `tests/test_hardening.py` | ~669 | ~88 hardening + integration tests |
 | `tests/test_plugins.py` | ~760 | ~92 plugin system tests |
 

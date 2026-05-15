@@ -77,6 +77,8 @@ from hive.prompts import (
     PROJECT_DNA_TASK,
     QUINN_REVIEW_TASK,
     QUINN_SYSTEM,
+    REGRESSION_SYSTEM,
+    REGRESSION_TASK,
     RELEASE_SYSTEM,
     RELEASE_TASK,
     SCOUT_REPO_ANALYSIS_SYSTEM,
@@ -91,7 +93,9 @@ from hive.prompts import (
 from hive.sandbox import (
     SANDBOX_ENABLED,
     check_file_in_context,
+    format_pii_findings,
     run_code_checks,
+    scan_pii,
 )
 from hive.state import (
     Amendment,
@@ -168,6 +172,8 @@ def _parse_contract(text: str) -> dict[str, dict]:
             files[current_file] = {
                 "purpose": "", "deps": [], "exports": [],
                 "patterns": [], "is_frontend": False,
+                "security": "none", "data_classification": "internal",
+                "error_handling": "",
             }
             continue
 
@@ -189,6 +195,12 @@ def _parse_contract(text: str) -> dict[str, dict]:
                 files[current_file]["is_frontend"] = val.lower() in ("true", "yes", "1")
             elif key == "purpose":
                 files[current_file]["purpose"] = val
+            elif key == "security":
+                files[current_file]["security"] = val
+            elif key == "data_classification":
+                files[current_file]["data_classification"] = val.lower()
+            elif key == "error_handling":
+                files[current_file]["error_handling"] = val
 
     if not files:
         raise ValueError("Contract block contained no file definitions")
@@ -1347,6 +1359,9 @@ class EPTCrew:
             deps=meta.get("deps", []),
             exports=meta.get("exports", []),
             patterns=meta.get("patterns", []),
+            security=meta.get("security", "none"),
+            data_classification=meta.get("data_classification", "internal"),
+            error_handling=meta.get("error_handling", "standard"),
             revision_notes="",
         )
 
@@ -1613,6 +1628,17 @@ class EPTCrew:
             f"  Exports: {meta.get('exports', [])}",
             f"  Patterns: {meta.get('patterns', [])}",
         ]
+
+        # Quality attributes (Phase 2 contract extensions)
+        security = meta.get("security", "none")
+        data_class = meta.get("data_classification", "internal")
+        error_handling = meta.get("error_handling", "")
+        if security and security != "none":
+            parts.append(f"  Security: {security}")
+        if data_class and data_class != "internal":
+            parts.append(f"  Data classification: {data_class}")
+        if error_handling:
+            parts.append(f"  Error handling: {error_handling}")
 
         # Include contract specs for declared dependencies
         deps = meta.get("deps", [])
@@ -1931,6 +1957,23 @@ class EPTCrew:
                     "Use these real results to inform your review.\n"
                 )
 
+        # ── PII / Security scan: static regex-based analysis ─────────────
+        all_source = {
+            name: fe.code for name, fe in self.board.registry.items()
+            if fe.approved and fe.code
+        }
+        pii_findings = scan_pii(all_source)
+        pii_report = format_pii_findings(pii_findings)
+        self.board.pii_report = pii_report
+        if pii_findings:
+            self.board.emit(EventType.SPEAKING, "system",
+                            f"🔒 PII/Security scan: {len(pii_findings)} finding(s)")
+            sandbox_section += f"\n\n{pii_report}\n"
+        else:
+            self.board.emit(EventType.SPEAKING, "system",
+                            "🔒 PII/Security scan: CLEAN")
+        self.ui.flush_events()
+
         quinn = AgentRoster.QUINN
         task = INTEGRATION_TASK.format(
             full_context=self.board.full_context_header(),
@@ -2047,6 +2090,34 @@ class EPTCrew:
         sit_path = self.board.docs_dir / "SIT.md"
         atomic_write(sit_path, sit_resp)
         self.board.emit(EventType.WRITING, "quinn", f"SIT saved: {sit_path}")
+        self.ui.flush_events()
+
+        # ── Regression Tests — Quinn generates executable test code ──
+        pii_report = getattr(self.board, "pii_report", "No PII scan performed.")
+        regression_task = REGRESSION_TASK.format(
+            feature=self.feature,
+            full_context=self.board.full_context_header(),
+            contract=self.board.contract,
+            approved_full=self.board.approved_full(),
+            deferred_issues=deferred_text,
+            pii_report=pii_report,
+        )
+        self.board.emit(EventType.WRITING, "quinn",
+                        "Generating regression test suite...")
+        self.ui.flush_events()
+        self._set_memory("quinn")
+        regression_resp = quinn.think(
+            self.board, regression_task, REGRESSION_SYSTEM, self.client,
+            max_tokens=8192,
+        )
+        self._clear_memory()
+
+        # Clean and save
+        regression_code = self._clean_code(regression_resp)
+        regression_path = self.board.src_dir / "test_regression.py"
+        atomic_write(regression_path, regression_code)
+        self.board.emit(EventType.WRITING, "quinn",
+                        f"Regression tests saved: {regression_path}")
         self.ui.flush_events()
 
         self._save()

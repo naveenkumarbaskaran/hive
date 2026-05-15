@@ -19,7 +19,7 @@ hive/                     ← core Python package (12 modules)
   __init__.py             ← exports + __version__
   agents.py               ← Agent dataclass, AgentRoster, DEV_POOL
   connectors.py           ← KnowledgeItem, ConnectorRegistry, git repo ingest
-  crew.py                 ← EPTCrew: 13-phase orchestrator (~2430 lines)
+  crew.py                 ← EPTCrew: 13-phase orchestrator (~2572 lines)
   hardening.py            ← atomic_write, file_lock, sanitize, budget, disk checks
   llm_client.py           ← LLMClient, ModelTier, auto-detect backend, retry+escalate
   memory.py               ← 3-tier memory: Agent → Team → Global
@@ -35,9 +35,9 @@ hive/                     ← core Python package (12 modules)
 run_hive.py               ← CLI entry point (argparse)
 llm_client.py             ← backward-compat shim → hive/llm_client.py
 tests/
-  test_hive.py            ← ~403 unit tests (NO real LLM calls)
+  test_hive.py            ← ~466 unit tests (NO real LLM calls)
   test_hardening.py       ← ~88 hardening + integration tests
-  test_plugins.py         ← ~92 plugin system tests (583 total)
+  test_plugins.py         ← ~92 plugin system tests (646 total)
 ```
 
 ## Architecture
@@ -70,6 +70,9 @@ tests/
 - **Contract Amendment Rebuild** (`crew.py`): Judge's AMEND_CONTRACT verdict applies amendment, refreshes cache, and triggers a full rebuild of the file
 - **Contract-Aware Review** (`crew.py` + `prompts.py`): Quinn receives contract specs for the file under review, including dependency interfaces and amendments
 - **Dep-Blocker Guard** (`crew.py`): `_downgrade_dep_blockers()` auto-downgrades FAIL verdicts from reviewers when the only blockers reference unapproved contract dependencies guaranteed to exist in later build layers
+- **Quality Playbook** (`prompts.py`): OWASP security checklist, SOLID principles, DPP/PII checks, input validation, and secret hygiene injected into all agent prompts
+- **PII Scanner** (`sandbox.py`): `scan_pii()` regex-based static analysis detects hardcoded secrets, PII in logs, eval/exec, unsafe deserialization, and shell injection
+- **Regression Test Generation** (`prompts.py` + `crew.py`): Quinn auto-generates executable regression test suite including boundary, negative, security, and PII tests
 - **Plugin System** (`plugins/`): optional protocol-based plugins for knowledge, guidelines, systems, test data, lifecycle hooks
 
 ## Coding Rules — ALWAYS FOLLOW

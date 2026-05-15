@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -323,6 +324,132 @@ class Sandbox:
         # Use -c to import the module in a subprocess
         cmd = [sys.executable, "-c", f"import {module_name}"]
         return self._run(cmd, cwd=self.workdir)
+
+    def run_coverage(self, test_files: list[str] | None = None) -> SandboxResult:
+        """Run tests with coverage measurement using coverage.py.
+
+        Returns a SandboxResult where stdout contains the coverage report.
+        If coverage.py is not installed, falls back to a plain test run.
+        """
+        if test_files is None:
+            test_files = [
+                f for f in self._files
+                if f.startswith("test_") or f.endswith("_test.py")
+            ]
+        if not test_files:
+            return SandboxResult(
+                success=True, stdout="No test files — coverage skipped",
+                command="(no tests for coverage)",
+            )
+
+        # Determine which source files to measure
+        source_files = [f for f in self._files if not f.startswith("test_")]
+        source_arg = ",".join(source_files) if source_files else "."
+
+        # Try running with coverage
+        cmd = [
+            sys.executable, "-m", "coverage", "run",
+            "--source", source_arg,
+            "-m", "pytest", "-x", "-q", "--tb=short", "--no-header",
+        ] + test_files
+        result = self._run(cmd, cwd=self.workdir)
+
+        if not result.success and "No module named" in result.stderr:
+            # coverage not installed — fall back to plain pytest
+            return self.run_tests(test_files)
+
+        if result.success:
+            # Generate the report
+            report_cmd = [sys.executable, "-m", "coverage", "report", "--show-missing"]
+            report = self._run(report_cmd, cwd=self.workdir)
+            return SandboxResult(
+                success=True,
+                exit_code=0,
+                stdout=f"Tests passed.\n\nCOVERAGE REPORT:\n{report.stdout}",
+                stderr=report.stderr,
+                command="coverage run + report",
+                files_written=list(self._files.keys()),
+            )
+
+        return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PII Scanner — regex-based static analysis
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Patterns that may indicate PII leakage in code
+_PII_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("Hardcoded email", re.compile(
+        r"""(?:"|')[\w.+-]+@[\w-]+\.[\w.-]+(?:"|')""", re.IGNORECASE)),
+    ("Hardcoded IP address", re.compile(
+        r"""(?:"|')\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:"|')""")),
+    ("Hardcoded password/secret", re.compile(
+        r"""(?:password|secret|api_key|apikey|token|auth)\s*=\s*(?:"|')[^"']{4,}(?:"|')""",
+        re.IGNORECASE)),
+    ("PII in log/print statement", re.compile(
+        r"""(?:log(?:ger)?\.(?:info|debug|warning|error|critical)|print)\s*\(.*"""
+        r"""(?:password|email|ssn|social.?security|phone|address|credit.?card"""
+        r"""|date.?of.?birth|dob)""",
+        re.IGNORECASE)),
+    ("eval/exec with variable", re.compile(
+        r"""(?:eval|exec)\s*\([^)"']*[a-zA-Z_]""")),
+    ("pickle.loads (unsafe deserialization)", re.compile(
+        r"""pickle\.loads?\s*\(""")),
+    ("yaml.load without SafeLoader", re.compile(
+        r"""yaml\.load\s*\([^)]*\)(?!.*(?:Safe|Full)Loader)""")),
+    ("subprocess with shell=True", re.compile(
+        r"""subprocess\.(?:run|call|Popen)\s*\([^)]*shell\s*=\s*True""")),
+]
+
+
+@dataclass
+class PIIFinding:
+    """A single PII/security finding from the static scanner."""
+    filename: str
+    line_number: int
+    rule: str
+    snippet: str
+
+
+def scan_pii(files: dict[str, str]) -> list[PIIFinding]:
+    """Scan source code files for PII leakage and security anti-patterns.
+
+    Returns a list of findings. Each finding includes the file, line, rule name,
+    and the offending code snippet.
+    """
+    findings: list[PIIFinding] = []
+
+    for filename, code in files.items():
+        # Skip test files — they may intentionally use fake data
+        if filename.startswith("test_"):
+            continue
+        for line_num, line in enumerate(code.splitlines(), start=1):
+            stripped = line.strip()
+            # Skip comments
+            if stripped.startswith("#"):
+                continue
+            for rule_name, pattern in _PII_PATTERNS:
+                if pattern.search(line):
+                    findings.append(PIIFinding(
+                        filename=filename,
+                        line_number=line_num,
+                        rule=rule_name,
+                        snippet=stripped[:120],
+                    ))
+
+    return findings
+
+
+def format_pii_findings(findings: list[PIIFinding]) -> str:
+    """Format PII findings as a human-readable report."""
+    if not findings:
+        return "PII/Security scan: CLEAN — no issues found."
+
+    lines = [f"PII/Security scan: {len(findings)} finding(s):\n"]
+    for f in findings:
+        lines.append(f"  [{f.rule}] {f.filename}:{f.line_number} — {f.snippet}")
+    return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

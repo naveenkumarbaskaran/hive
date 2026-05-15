@@ -286,6 +286,7 @@ class Blackboard:
     integration_verdict: str = ""
     integration_notes: str = ""   # Quinn's detailed findings
     release_verdict: str = ""
+    pii_report: str = ""          # PII/security scan results
 
     # ── Test documentation ──
     uat_doc: str = ""
