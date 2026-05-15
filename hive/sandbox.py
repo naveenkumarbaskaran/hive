@@ -87,6 +87,35 @@ class SandboxResult:
 _MAX_OUTPUT = 4000  # max chars of stdout/stderr to capture (avoid prompt bloat)
 
 
+def _extract_missing_module(stderr: str) -> str | None:
+    """Extract the top-level module name from a ModuleNotFoundError message.
+
+    Examples:
+        "ModuleNotFoundError: No module named 'click'"  → "click"
+        "ModuleNotFoundError: No module named 'todo.models'"  → "todo"
+    """
+    import re
+    m = re.search(r"No module named ['\"]([\w.]+)", stderr)
+    if m:
+        return m.group(1).split(".")[0]
+    return None
+
+
+def _is_internal_module(module_name: str, staged_files: dict[str, str]) -> bool:
+    """Check whether a module name corresponds to a file staged in the sandbox.
+
+    Handles both flat files (``todo.py`` → module ``todo``) and packages
+    (``models/user.py`` → module ``models``).
+    """
+    staged_modules: set[str] = set()
+    for f in staged_files:
+        if f.endswith(".py"):
+            # "todo.py" → "todo", "models/user.py" → "models"
+            parts = f.replace(".py", "").split("/")
+            staged_modules.add(parts[0])
+    return module_name in staged_modules
+
+
 def _safe_env() -> dict[str, str]:
     """Build a restricted environment for subprocess execution.
 
@@ -333,12 +362,21 @@ def run_code_checks(
             if f.endswith(".py"):
                 result = sb.import_check(f)
                 if not result.success:
-                    # Filter out expected import errors (missing external deps)
                     stderr = result.stderr
                     if "ModuleNotFoundError" in stderr:
-                        # Extract the missing module name
-                        logger.info("Import check for %s: missing external dep (OK)", f)
-                        continue  # external deps are expected to be missing
+                        missing = _extract_missing_module(stderr)
+                        if missing and not _is_internal_module(missing, files):
+                            # Truly external — not staged in the sandbox
+                            logger.info(
+                                "Import check for %s: external dep '%s' (OK)",
+                                f, missing,
+                            )
+                            continue
+                        # Internal module is missing → real problem
+                        logger.warning(
+                            "Import check for %s: internal module '%s' not found",
+                            f, missing,
+                        )
                     import_errors.append(f"{f}: {stderr}")
 
         if import_errors:
@@ -373,3 +411,63 @@ def syntax_check_file(filename: str, code: str) -> SandboxResult:
     with Sandbox(timeout=10) as sb:
         sb.add_file(filename, code)
         return sb.syntax_check(filename)
+
+
+def check_file_in_context(
+    target: str,
+    target_code: str,
+    context_files: dict[str, str],
+    timeout: int = SANDBOX_TIMEOUT,
+) -> SandboxResult:
+    """Check a single file with supporting context files staged alongside.
+
+    Writes *all* ``context_files`` plus the ``target`` into the sandbox, then
+    runs syntax + import checks on the **target only**.  Sibling files are
+    present so that cross-module imports resolve correctly.
+
+    ModuleNotFoundError for truly-external packages (not in ``context_files``)
+    are tolerated; errors for modules that *are* staged are treated as real
+    failures.
+    """
+    if not SANDBOX_ENABLED:
+        return SandboxResult(success=True, stdout="Sandbox disabled (HIVE_SANDBOX_ENABLED=0)")
+
+    all_files = {**context_files, target: target_code}
+
+    with Sandbox(timeout=timeout) as sb:
+        sb.add_files(all_files)
+
+        # 1. Syntax check the target file
+        result = sb.syntax_check(target)
+        if not result.success:
+            return result
+
+        # 2. Import check (Python source files only, skip test files)
+        if target.endswith(".py") and not target.startswith("test_"):
+            result = sb.import_check(target)
+            if not result.success:
+                stderr = result.stderr
+                if "ModuleNotFoundError" in stderr:
+                    missing = _extract_missing_module(stderr)
+                    if missing and not _is_internal_module(missing, all_files):
+                        # Truly external dep — not our problem
+                        return SandboxResult(
+                            success=True,
+                            exit_code=0,
+                            stdout=(
+                                f"Syntax OK: {target}. "
+                                f"Import: external dep '{missing}' — skipped."
+                            ),
+                            command=f"syntax + import check: {target}",
+                            files_written=list(all_files.keys()),
+                        )
+                # Internal module missing or non-import error → real failure
+                return result
+
+        return SandboxResult(
+            success=True,
+            exit_code=0,
+            stdout=f"Syntax + import OK: {target}",
+            command=f"check_file_in_context: {target}",
+            files_written=list(all_files.keys()),
+        )

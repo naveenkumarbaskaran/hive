@@ -6,7 +6,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Tests](https://img.shields.io/badge/tests-531%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-547%20passing-brightgreen)
 ![Dependencies](https://img.shields.io/badge/deps-1%20(httpx)-orange)
 
 ---
@@ -136,6 +136,7 @@ Frontend files additionally get reviewed by Pixel (style) and Alex (UX/user pers
 Every generated Python file is **actually executed** before review:
 - **Syntax check** via `py_compile` (zero cost, instant)
 - **Import check** verifies the module loads without runtime errors
+- **Context-aware imports**: `check_file_in_context()` stages sibling registry files so cross-module imports resolve correctly; distinguishes internal vs external `ModuleNotFoundError`
 - **Test execution** if test files are generated
 - Runs in an isolated temp directory with API keys stripped
 - Sandbox feedback loops back to the dev for self-correction
@@ -415,7 +416,7 @@ make test-cov
 make lint
 ```
 
-531 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, and the plugin system — all without making real API calls.
+547 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, and the plugin system — all without making real API calls.
 
 ## Architecture
 

@@ -35,9 +35,9 @@ hive/                     ← core Python package (12 modules)
 run_hive.py               ← CLI entry point (argparse)
 llm_client.py             ← backward-compat shim → hive/llm_client.py
 tests/
-  test_hive.py            ← ~351 unit tests (NO real LLM calls)
+  test_hive.py            ← ~397 unit tests (NO real LLM calls)
   test_hardening.py       ← ~88 hardening + integration tests
-  test_plugins.py         ← ~92 plugin system tests (531 total)
+  test_plugins.py         ← ~92 plugin system tests (547 total)
 ```
 
 ## Architecture
@@ -54,6 +54,7 @@ tests/
 - **ModelTier** (`llm_client.py`): FAST / BALANCED / POWERFUL — agents request capability, not model names
 - **Resilient LLM** (`llm_client.py`): 5-attempt retry with tier escalation + 429 model rotation
 - **Code Execution Sandbox** (`sandbox.py`): syntax check, import check, test runner in isolated temp dir
+- **Context-Aware Sandbox** (`sandbox.py`): `check_file_in_context()` stages all sibling registry files alongside the target so cross-module imports resolve correctly; distinguishes internal vs external `ModuleNotFoundError`
 - **Cost Tracking** (`telemetry.py`): per-call metering, per-phase metrics, budget enforcement
 - **Self-Reflection**: dev agents self-critique code against contract before review (FAST tier)
 - **Adaptive Context**: model-aware context window budgeting (70% context / 30% task+output)

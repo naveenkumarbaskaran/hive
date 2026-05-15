@@ -90,8 +90,8 @@ from hive.prompts import (
 )
 from hive.sandbox import (
     SANDBOX_ENABLED,
+    check_file_in_context,
     run_code_checks,
-    syntax_check_file,
 )
 from hive.state import (
     Amendment,
@@ -1500,7 +1500,7 @@ class EPTCrew:
 
         for sandbox_attempt in range(1, max_sandbox_retries + 1):
             self.ui.file_status(fname, "sandbox", f"check #{sandbox_attempt}")
-            result = syntax_check_file(fname, entry.code)
+            result = check_file_in_context(fname, entry.code, file_set)
 
             if result.success:
                 self.board.emit(EventType.SPEAKING, "system",

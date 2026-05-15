@@ -23,7 +23,7 @@ No LangChain. No CrewAI. Just Python 3.12+, httpx, and structured prompts.
 | CLI command | `hive` |
 | Entry point | `run_hive.py` → `main()` |
 | Core package | `hive/` (12 modules + plugins subpackage) |
-| Tests | `tests/test_hive.py` (~351), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 531 total |
+| Tests | `tests/test_hive.py` (~397), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 547 total |
 | Python | ≥ 3.12 |
 | Build system | Hatchling |
 | Only runtime dep | `httpx` |
@@ -54,7 +54,7 @@ hive/                     ← repo root
 ├── run_hive.py           ← CLI entry point (argparse)
 ├── llm_client.py         ← backward-compat shim → hive/llm_client.py
 ├── tests/
-│   ├── test_hive.py      ← ~381 unit tests (NO real LLM calls)
+│   ├── test_hive.py      ← ~397 unit tests (NO real LLM calls)
 │   ├── test_hardening.py ← hardening + integration tests
 │   └── test_plugins.py   ← plugin system tests (~92)
 ├── projects/             ← runtime output (gitignored)
@@ -97,6 +97,7 @@ ruff format hive/ tests/ run_hive.py
 - **ModelTier** (`hive/llm_client.py`): FAST / BALANCED / POWERFUL — agents request capability, not model names
 - **Resilient LLM** (`hive/llm_client.py`): 5-attempt retry with tier escalation + 429 model rotation
 - **Code Execution Sandbox** (`hive/sandbox.py`): syntax check, import check, test runner in isolated temp dir
+- **Context-Aware Sandbox** (`hive/sandbox.py`): `check_file_in_context()` stages all sibling registry files alongside the target so cross-module imports resolve correctly; distinguishes internal vs external `ModuleNotFoundError`
 - **Cost Tracking** (`hive/telemetry.py`): per-call metering, per-phase metrics, budget enforcement
 - **Self-Reflection**: dev agents self-critique code against contract before review (FAST tier)
 - **Adaptive Context**: model-aware context window budgeting (70% context / 30% task+output)

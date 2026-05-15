@@ -103,13 +103,13 @@ and structured prompts.
 | `hive/connectors.py` | ~580 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest, URL fetch |
 | `hive/hardening.py` | ~478 | atomic_write, file_lock, sanitize, budget, disk checks |
 | `hive/memory.py` | ~456 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
-| `hive/sandbox.py` | ~375 | **NEW** Code execution loop: Sandbox, syntax check, import check, test runner, safe subprocess |
+| `hive/sandbox.py` | ~440 | **NEW** Code execution loop: Sandbox, syntax check, import check, test runner, safe subprocess, context-aware imports |
 | `hive/agents.py` | ~338 | Agent dataclass with logbook+memory-wired think(), AgentRoster (10 named agents), DEV_POOL, REVIEWER_POOL |
 | `hive/telemetry.py` | ~317 | **NEW** CostTracker, BudgetExceeded, estimate_cost, model_context_window, per-phase PhaseMetrics |
 | `hive/plugins/` | ~660 | **NEW** Optional plugin system: protocols (base.py), discovery+registry (registry.py), 4 example plugins |
 | `hive/__init__.py` | ~44 | Package exports |
 | `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo, --plugin |
-| `tests/test_hive.py` | ~3230 | ~351 unit tests (no API calls) |
+| `tests/test_hive.py` | ~3230 | ~397 unit tests (no API calls) |
 | `tests/test_hardening.py` | ~669 | ~88 hardening + integration tests |
 | `tests/test_plugins.py` | ~760 | ~92 plugin system tests |
 
@@ -242,6 +242,7 @@ Proceed to review anyway (sandbox is advisory, not blocking)
 - Output truncated to prevent prompt bloat
 - Path traversal in filenames blocked
 - Can be disabled entirely: `HIVE_SANDBOX_ENABLED=0`
+- **Context-aware imports**: `check_file_in_context()` stages all sibling registry files alongside the target so cross-module imports resolve correctly; distinguishes internal vs external `ModuleNotFoundError`
 
 ### 6c. Self-Reflection Loop
 After sandbox (before review), each Python file goes through a **self-reflection**
