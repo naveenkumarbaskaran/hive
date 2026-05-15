@@ -110,7 +110,7 @@ and structured prompts.
 | `hive/__init__.py` | ~44 | Package exports |
 | `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo, --plugin |
 | `tests/test_hive.py` | ~3230 | ~351 unit tests (no API calls) |
-| `tests/test_hardening.py` | ~669 | ~72 hardening + integration tests |
+| `tests/test_hardening.py` | ~669 | ~88 hardening + integration tests |
 | `tests/test_plugins.py` | ~760 | ~92 plugin system tests |
 
 ## Key Design Patterns
@@ -354,7 +354,12 @@ templates include a `{dependency_context}` placeholder that receives this
 targeted context. This dramatically improves code quality for files with
 inter-module dependencies.
 
-### 6j. Rate-Limit Retry & Dropped File Recovery
+### 6j. Request Pacing
+Thread-safe `_RequestPacer` in `hive/llm_client.py` enforces a minimum interval
+(`HIVE_REQUEST_PACE_MS`, default 200 ms) between LLM calls. On 429 responses the
+pacer respects the server's `Retry-After` header, preventing thundering-herd retries.
+
+### 6k. Rate-Limit Retry & Dropped File Recovery
 Files that fail due to 429 rate-limit cascades during build are not silently
 dropped. Instead, they're queued for retry after a cooldown:
 
@@ -377,7 +382,7 @@ spawns ephemeral FAST-tier sub-reviewer agents (Remy, River, Robin, Riley) —
 one per file batch. Quinn only re-reviews files that a sub-reviewer FAILed,
 avoiding a single-agent bottleneck on large builds.
 
-### 6k. Plugin System (Optional)
+### 6l. Plugin System (Optional)
 Hive has a protocol-based plugin architecture (`hive/plugins/`) that allows
 injecting domain knowledge, coding guidelines, external system connectors,
 test data, and lifecycle hooks — all without modifying core modules.

@@ -1191,9 +1191,11 @@ class EPTCrew:
             self.ui.flush_events()
 
             # Files in the same dep layer have no inter-dependencies — build in parallel
-            # Adaptive: scale workers to CPU count, capped at layer size
+            # Adaptive: scale workers, capped at HIVE_MAX_BUILD_WORKERS (default 2)
+            # to avoid rate-limiting the shared LLM endpoint.
             cpu_limit = os.cpu_count() or 4
-            max_workers = min(len(layer), cpu_limit)
+            build_cap = int(os.getenv("HIVE_MAX_BUILD_WORKERS", "2"))
+            max_workers = min(len(layer), cpu_limit, build_cap)
             if max_workers == 1:
                 # Single file in layer — skip thread overhead
                 for fname in layer:

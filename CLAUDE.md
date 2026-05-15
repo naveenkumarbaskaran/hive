@@ -23,7 +23,7 @@ No LangChain. No CrewAI. Just Python 3.12+, httpx, and structured prompts.
 | CLI command | `hive` |
 | Entry point | `run_hive.py` → `main()` |
 | Core package | `hive/` (12 modules + plugins subpackage) |
-| Tests | `tests/test_hive.py` (~351), `tests/test_hardening.py` (~72), `tests/test_plugins.py` (~92) — 515 total |
+| Tests | `tests/test_hive.py` (~351), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 531 total |
 | Python | ≥ 3.12 |
 | Build system | Hatchling |
 | Only runtime dep | `httpx` |
@@ -105,6 +105,7 @@ ruff format hive/ tests/ run_hive.py
 - **Dep-layered build**: topological sort of file deps → parallel layers
 - **Memory** (`hive/memory.py`): 3-tier learning (agent → team → global)
 - **Rate-limit retry**: 429-cascaded files queued for retry after cooldown
+- **Request Pacing** (`hive/llm_client.py`): thread-safe `_RequestPacer` enforces min interval between LLM calls; respects server `Retry-After` headers on 429s
 - **Streaming LLM** (`hive/llm_client.py`): `on_token` callback for real-time token streaming across all backends
 - **URL Attachment** (`hive/connectors.py`): `--attach https://...` fetches remote URLs, auto-detects type
 - **Registry-Aware Dev Context** (`hive/crew.py`): devs get full code of declared dependencies via `_dependency_context()`
@@ -144,6 +145,7 @@ ruff format hive/ tests/ run_hive.py
 | `HIVE_MIN_DISK_MB` | `50` | Min free disk before saves |
 | `HIVE_PROJECTS_DIR` | `./projects` | Where projects are saved |
 | `HIVE_LLM_TIMEOUT` | `120` | HTTP timeout (seconds) for LLM requests |
+| `HIVE_MAX_BUILD_WORKERS` | `2` | Max parallel file-build threads per dep layer |
 | `HIVE_MAX_REVISIONS` | `3` | Max code revision cycles per file |
 | `HIVE_MAX_EVENTS` | `1000` | Max events kept in Blackboard memory |
 | `HIVE_MAX_GLOBAL_MEMORY` | `100` | Max global memory entries retained |
@@ -153,6 +155,7 @@ ruff format hive/ tests/ run_hive.py
 | `HIVE_SANDBOX_TIMEOUT` | `30` | Max seconds per sandbox execution |
 | `HIVE_SANDBOX_ENABLED` | `1` | Set `0` to disable code execution sandbox |
 | `HIVE_RATE_LIMIT_COOLDOWN` | `30` | Seconds to wait before retrying rate-limited files |
+| `HIVE_REQUEST_PACE_MS` | `200` | Minimum milliseconds between LLM requests (0 to disable) |
 | `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
 
 ## Common Tasks for Claude

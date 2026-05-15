@@ -46,6 +46,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -58,6 +59,100 @@ import httpx
 from hive.hardening import backoff_wait as _backoff_wait
 
 logger = logging.getLogger("hive.llm")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Thread-safe request pacer — prevents concurrent threads from flooding
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _RequestPacer:
+    """Thread-safe pacer that enforces a minimum interval between LLM requests.
+
+    When multiple threads call ``pace()`` concurrently, each one waits its turn
+    so requests are serialized with at least ``min_interval_ms`` between them.
+    This prevents N parallel build threads from sending N simultaneous requests
+    to a rate-limited endpoint.
+    """
+
+    def __init__(self, min_interval_ms: int = 0) -> None:
+        self._lock = threading.Lock()
+        self._last_call = 0.0
+        self._min_interval = min_interval_ms / 1000.0
+
+    @property
+    def interval_ms(self) -> int:
+        return int(self._min_interval * 1000)
+
+    @interval_ms.setter
+    def interval_ms(self, value: int) -> None:
+        self._min_interval = value / 1000.0
+
+    def pace(self) -> float:
+        """Block until enough time has passed since the last call.
+
+        Returns the actual wait time in seconds (0 if no wait was needed).
+        """
+        if self._min_interval <= 0:
+            return 0.0
+        with self._lock:
+            now = time.time()
+            elapsed = now - self._last_call
+            if elapsed < self._min_interval:
+                wait = self._min_interval - elapsed
+                time.sleep(wait)
+            else:
+                wait = 0.0
+            self._last_call = time.time()
+            return wait
+
+    def backoff(self, seconds: float) -> None:
+        """Temporarily widen the pacing interval after a rate-limit hit.
+
+        Sets ``_last_call`` into the future so the *next* ``pace()`` call by
+        any thread will honour the server-requested ``Retry-After`` delay.
+        The base ``min_interval`` is unchanged — once the extra pause is
+        consumed the pacer returns to its normal cadence.
+        """
+        with self._lock:
+            future = time.time() + seconds - self._min_interval
+            if future > self._last_call:
+                self._last_call = future
+
+
+def _extract_retry_after(exc: Exception) -> float | None:
+    """Extract Retry-After seconds from a 429 response, if available.
+
+    Checks the exception's response for the ``Retry-After`` header
+    and the Anthropic-specific ``retry-after`` body field.
+    Returns seconds to wait, or None if not found.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return None
+
+    # Check standard Retry-After header
+    header_val = None
+    if hasattr(resp, "headers"):
+        header_val = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+    if header_val:
+        try:
+            return float(header_val)
+        except (ValueError, TypeError):
+            pass
+
+    # Check Anthropic-style JSON body: {"error": {"type": "rate_limit_error", ...}}
+    try:
+        body = resp.json() if hasattr(resp, "json") else {}
+        err = body.get("error", {})
+        if isinstance(err, dict):
+            # Some proxies include retry_after in the error body
+            ra = err.get("retry_after") or err.get("retry-after")
+            if ra is not None:
+                return float(ra)
+    except Exception:
+        pass
+
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,6 +234,7 @@ class LLMClient:
         if self._format == "auto":
             self._format = None  # auto = run detection
         self._anthropic_client: Any = None  # lazy-loaded SDK client
+        self._pacer = _RequestPacer(int(os.getenv("HIVE_REQUEST_PACE_MS", "200")))
 
     # ── Fallback model helpers ─────────────────────────────────────────────────
 
@@ -255,6 +351,7 @@ class LLMClient:
                   "Set LLM_FALLBACK_MODELS for resilience.")
 
         for attempt in range(1, retries + 1):
+            self._pacer.pace()
             try:
                 if fmt == self.ANTHROPIC_NATIVE:
                     resp = self._chat_anthropic_sdk(system, messages, current_model,
@@ -301,22 +398,34 @@ class LLMClient:
                     # ── Rate limit: rotate to next available model immediately ──
                     rate_limited_models.add(current_model)
                     available = [m for m in model_pool if m not in rate_limited_models]
+                    retry_after = _extract_retry_after(exc)
 
                     if available:
                         current_model = available[0]
                         model_switched = True
-                        wait = random.uniform(0.5, 2.0)  # short backoff — switching model
+                        # Respect server Retry-After if present, else short backoff
+                        if retry_after and retry_after > 0:
+                            wait = min(retry_after, 60.0)
+                        else:
+                            wait = random.uniform(0.5, 2.0)
                         logger.info("Rate-limited on %s, switching to %s",
                                     rate_limited_models, current_model)
                         print(f"  [LLM fallback] rate-limited, switching to model: {current_model}")
                     else:
                         # All models in pool are rate-limited — reset and wait longer
                         rate_limited_models.clear()
-                        # Longer base when pool is single-model (no rotation benefit)
-                        base = 3.0 if len(model_pool) <= 1 else 2.0
-                        wait = _backoff_wait(attempt, base=base, max_wait=45.0)
+                        if retry_after and retry_after > 0:
+                            wait = min(retry_after, 60.0)
+                        else:
+                            # Longer base when pool is single-model (no rotation benefit)
+                            base = 3.0 if len(model_pool) <= 1 else 2.0
+                            wait = _backoff_wait(attempt, base=base, max_wait=45.0)
                         logger.info("All models rate-limited, resetting pool and waiting %.1fs", wait)
                         print(f"  [LLM fallback] all models rate-limited, waiting {wait:.1f}s before retrying")
+                    # Feed Retry-After into the pacer so subsequent requests
+                    # are spaced at least that far apart.
+                    if retry_after and retry_after > 0:
+                        self._pacer.backoff(retry_after)
                 else:
                     # ── Non-rate-limit error: existing strategy ──
                     wait = _backoff_wait(attempt, base=1.0, max_wait=60.0)

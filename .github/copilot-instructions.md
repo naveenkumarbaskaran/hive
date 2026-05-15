@@ -36,8 +36,8 @@ run_hive.py               ← CLI entry point (argparse)
 llm_client.py             ← backward-compat shim → hive/llm_client.py
 tests/
   test_hive.py            ← ~351 unit tests (NO real LLM calls)
-  test_hardening.py       ← ~72 hardening + integration tests
-  test_plugins.py         ← ~92 plugin system tests (515 total)
+  test_hardening.py       ← ~88 hardening + integration tests
+  test_plugins.py         ← ~92 plugin system tests (531 total)
 ```
 
 ## Architecture
@@ -62,6 +62,7 @@ tests/
 - **Dep-layered build**: topological sort of file deps → parallel layers
 - **Memory** (`memory.py`): 3-tier learning (agent → team → global)
 - **Rate-limit retry**: 429-cascaded files queued for retry after cooldown
+- **Request Pacing** (`llm_client.py`): thread-safe `_RequestPacer` enforces min interval between LLM calls; respects server `Retry-After` headers on 429s
 - **Streaming LLM** (`llm_client.py`): `on_token` callback for real-time token streaming across all backends
 - **URL Attachment** (`connectors.py`): `--attach https://...` fetches remote URLs, auto-detects type
 - **Registry-Aware Dev Context** (`crew.py`): devs get full code of declared dependencies via `_dependency_context()`
@@ -123,6 +124,7 @@ make fmt           # ruff format
 | `HIVE_MIN_DISK_MB` | `50` | Min free disk before saves |
 | `HIVE_PROJECTS_DIR` | `./projects` | Where projects are saved |
 | `HIVE_LLM_TIMEOUT` | `120` | HTTP timeout (seconds) for LLM requests |
+| `HIVE_MAX_BUILD_WORKERS` | `2` | Max parallel file-build threads per dep layer |
 | `HIVE_MAX_REVISIONS` | `3` | Max code revision cycles per file |
 | `HIVE_MAX_EVENTS` | `1000` | Max events kept in Blackboard memory |
 | `HIVE_MAX_GLOBAL_MEMORY` | `100` | Max global memory entries retained |
@@ -132,6 +134,7 @@ make fmt           # ruff format
 | `HIVE_SANDBOX_TIMEOUT` | `30` | Max seconds per sandbox execution |
 | `HIVE_SANDBOX_ENABLED` | `1` | Set `0` to disable code execution sandbox |
 | `HIVE_RATE_LIMIT_COOLDOWN` | `30` | Seconds to wait before retrying rate-limited files |
+| `HIVE_REQUEST_PACE_MS` | `200` | Minimum milliseconds between LLM requests (0 to disable) |
 | `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
 
 ## Common Tasks

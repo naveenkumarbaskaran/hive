@@ -6,7 +6,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Tests](https://img.shields.io/badge/tests-515%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-531%20passing-brightgreen)
 ![Dependencies](https://img.shields.io/badge/deps-1%20(httpx)-orange)
 
 ---
@@ -356,6 +356,8 @@ All configuration is via **environment variables** — no config files to manage
 | `HIVE_SANDBOX_TIMEOUT` | `30` | Max seconds per sandbox execution |
 | `HIVE_SANDBOX_ENABLED` | `1` | Set to `0` to disable code execution sandbox |
 | `HIVE_RATE_LIMIT_COOLDOWN` | `30` | Seconds to wait before retrying rate-limited files |
+| `HIVE_REQUEST_PACE_MS` | `200` | Minimum milliseconds between LLM requests (0 to disable) |
+| `HIVE_MAX_BUILD_WORKERS` | `2` | Max parallel file-build threads per dep layer |
 | `HIVE_MAX_EVENTS` | `1000` | Max events kept in Blackboard memory |
 | `HIVE_MAX_GLOBAL_MEMORY` | `100` | Max global memory entries retained |
 | `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
@@ -413,7 +415,7 @@ make test-cov
 make lint
 ```
 
-515 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, and the plugin system — all without making real API calls.
+531 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, and the plugin system — all without making real API calls.
 
 ## Architecture
 

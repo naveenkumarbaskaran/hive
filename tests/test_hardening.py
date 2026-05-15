@@ -24,8 +24,9 @@ import os
 import threading
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from hive.hardening import (
     CleanupRegistry,
@@ -667,3 +668,194 @@ class TestCheckDiskSpace:
         """DiskSpaceError should be a subclass of OSError."""
         from hive.hardening import DiskSpaceError
         assert issubclass(DiskSpaceError, OSError)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Request Pacer Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRequestPacer:
+    """Tests for _RequestPacer thread-safe pacing."""
+
+    def test_zero_interval_no_delay(self):
+        """Pacer with 0ms interval should never block."""
+        from hive.llm_client import _RequestPacer
+        pacer = _RequestPacer(0)
+        waited = pacer.pace()
+        assert waited == 0.0
+
+    def test_first_call_no_delay(self):
+        """First call after init should not block (no previous call)."""
+        from hive.llm_client import _RequestPacer
+        pacer = _RequestPacer(500)  # 500ms
+        t0 = time.time()
+        pacer.pace()
+        elapsed = time.time() - t0
+        assert elapsed < 0.1  # should be near-instant
+
+    def test_second_call_respects_interval(self):
+        """Second call should block for approximately min_interval_ms."""
+        from hive.llm_client import _RequestPacer
+        pacer = _RequestPacer(200)  # 200ms
+        pacer.pace()
+        t0 = time.time()
+        waited = pacer.pace()
+        elapsed = time.time() - t0
+        assert elapsed >= 0.15  # allow some tolerance
+        assert waited >= 0.15
+
+    def test_interval_ms_property(self):
+        """interval_ms getter/setter should work."""
+        from hive.llm_client import _RequestPacer
+        pacer = _RequestPacer(300)
+        assert pacer.interval_ms == 300
+        pacer.interval_ms = 100
+        assert pacer.interval_ms == 100
+
+    def test_thread_safety(self):
+        """Multiple threads calling pace() should serialize requests."""
+        from hive.llm_client import _RequestPacer
+        pacer = _RequestPacer(50)  # 50ms between calls
+        timestamps: list[float] = []
+        lock = threading.Lock()
+
+        def worker():
+            pacer.pace()
+            with lock:
+                timestamps.append(time.time())
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        timestamps.sort()
+        # Each consecutive call should be ~50ms apart
+        for i in range(1, len(timestamps)):
+            gap = timestamps[i] - timestamps[i - 1]
+            assert gap >= 0.03  # allow 20ms tolerance for thread scheduling
+
+    def test_backoff_delays_next_call(self):
+        """backoff() should make the next pace() call wait longer."""
+        from hive.llm_client import _RequestPacer
+        pacer = _RequestPacer(50)  # normal 50ms pace
+        pacer.pace()
+        pacer.backoff(0.5)  # push the next call out by ~500ms
+        t0 = time.time()
+        pacer.pace()
+        elapsed = time.time() - t0
+        assert elapsed >= 0.35  # should wait at least ~350ms (with tolerance)
+
+    def test_backoff_does_not_shrink_interval(self):
+        """backoff(0) should not move _last_call backwards."""
+        from hive.llm_client import _RequestPacer
+        pacer = _RequestPacer(100)
+        pacer.pace()
+        old_last = pacer._last_call
+        pacer.backoff(0)
+        assert pacer._last_call >= old_last
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Retry-After Extraction Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestExtractRetryAfter:
+    """Tests for _extract_retry_after helper."""
+
+    def test_none_for_non_http_error(self):
+        """Returns None for generic exceptions (no response)."""
+        from hive.llm_client import _extract_retry_after
+        result = _extract_retry_after(ValueError("some error"))
+        assert result is None
+
+    def test_extracts_retry_after_header(self):
+        """Extracts Retry-After from HTTP 429 response header."""
+        from hive.llm_client import _extract_retry_after
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {"retry-after": "5"}
+        mock_response.text = ""
+        exc = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=mock_response)
+        result = _extract_retry_after(exc)
+        assert result == 5.0
+
+    def test_extracts_retry_after_from_body(self):
+        """Extracts retry_after from Anthropic JSON error body."""
+        from hive.llm_client import _extract_retry_after
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {}
+        mock_response.json.return_value = {
+            "error": {"type": "rate_limit_error", "message": "Rate limited", "retry_after": 10}
+        }
+        exc = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=mock_response)
+        result = _extract_retry_after(exc)
+        assert result == 10.0
+
+    def test_returns_none_when_no_retry_info(self):
+        """Returns None when 429 response has no retry-after info."""
+        from hive.llm_client import _extract_retry_after
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {}
+        mock_response.json.return_value = {}
+        exc = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=mock_response)
+        result = _extract_retry_after(exc)
+        assert result is None
+
+    def test_handles_malformed_body(self):
+        """Returns None when response body is not valid JSON."""
+        from hive.llm_client import _extract_retry_after
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {}
+        mock_response.json.side_effect = ValueError("not json")
+        exc = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=mock_response)
+        result = _extract_retry_after(exc)
+        assert result is None
+
+    def test_float_header_value(self):
+        """Handles float Retry-After header values."""
+        from hive.llm_client import _extract_retry_after
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {"retry-after": "2.5"}
+        mock_response.text = ""
+        exc = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=mock_response)
+        result = _extract_retry_after(exc)
+        assert result == 2.5
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LLMClient Pacer Integration Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLLMClientPacerIntegration:
+    """Tests that LLMClient wires up the _RequestPacer correctly."""
+
+    def test_pacer_created_with_env_default(self, monkeypatch):
+        """LLMClient creates a pacer with HIVE_REQUEST_PACE_MS default (200)."""
+        monkeypatch.delenv("HIVE_REQUEST_PACE_MS", raising=False)
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        from hive.llm_client import LLMClient
+        client = LLMClient(api_key="test-key")
+        assert client._pacer.interval_ms == 200
+
+    def test_pacer_created_with_env_override(self, monkeypatch):
+        """LLMClient respects HIVE_REQUEST_PACE_MS env var."""
+        monkeypatch.setenv("HIVE_REQUEST_PACE_MS", "500")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        from hive.llm_client import LLMClient
+        client = LLMClient(api_key="test-key")
+        assert client._pacer.interval_ms == 500
+
+    def test_pacer_zero_disables_pacing(self, monkeypatch):
+        """Setting HIVE_REQUEST_PACE_MS=0 disables pacing."""
+        monkeypatch.setenv("HIVE_REQUEST_PACE_MS", "0")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        from hive.llm_client import LLMClient
+        client = LLMClient(api_key="test-key")
+        assert client._pacer.interval_ms == 0
+
