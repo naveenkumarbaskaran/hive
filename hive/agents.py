@@ -8,12 +8,11 @@ conversation history — the Blackboard is the single source of truth.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
-from hive.llm_client import LLMClient, LLMResponse, ModelTier, llm as _default_llm
+from hive.llm_client import LLMClient, ModelTier
+from hive.llm_client import llm as _default_llm
 from hive.state import Blackboard, EventType, LogEntry
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Agent

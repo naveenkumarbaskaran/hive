@@ -21,30 +21,26 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from hive.hardening import (
+    CleanupRegistry,
     atomic_write,
+    backoff_wait,
+    budget_context,
+    clean_code_fences,
+    estimate_tokens,
     file_lock,
     sanitize_filename,
-    estimate_tokens,
-    truncate_to_budget,
-    budget_context,
-    validate_code_output,
-    clean_code_fences,
-    backoff_wait,
-    CleanupRegistry,
-    validate_checkpoint_data,
-    CHECKPOINT_SCHEMA_VERSION,
     setup_logging,
+    truncate_to_budget,
+    validate_checkpoint_data,
+    validate_code_output,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Atomic writes
@@ -465,7 +461,7 @@ class TestEventCapping:
     """Test that events list is capped to prevent OOM."""
 
     def test_events_capped(self):
-        from hive.state import Blackboard, EventType, _MAX_EVENTS
+        from hive.state import _MAX_EVENTS, Blackboard, EventType
         board = Blackboard(feature="test")
         # Emit more than max
         for i in range(_MAX_EVENTS + 500):
@@ -473,7 +469,7 @@ class TestEventCapping:
         assert len(board.events) == _MAX_EVENTS
 
     def test_cap_preserves_recent(self):
-        from hive.state import Blackboard, EventType, _MAX_EVENTS
+        from hive.state import _MAX_EVENTS, Blackboard, EventType
         board = Blackboard(feature="test")
         for i in range(_MAX_EVENTS + 100):
             board.emit(EventType.THINKING, "test", f"event {i}")
@@ -509,7 +505,7 @@ class TestAtomicWriteIntegration:
 
     def test_save_checkpoint_atomic(self, tmp_path):
         """save_checkpoint should create files atomically (no .tmp leftovers)."""
-        from hive.state import Blackboard, save_checkpoint, PROJECTS_DIR
+        from hive.state import PROJECTS_DIR, Blackboard, save_checkpoint
         with patch.object(
             type(PROJECTS_DIR), '__fspath__',
             return_value=str(tmp_path),
@@ -553,8 +549,8 @@ class TestFilenameSanitizationIntegration:
     """Test that save_source_file sanitizes LLM-generated filenames."""
 
     def test_traversal_blocked(self, tmp_path):
-        from hive.state import Blackboard, FileEntry
         import hive.state as state_mod
+        from hive.state import Blackboard, FileEntry
         old_dir = state_mod.PROJECTS_DIR
         state_mod.PROJECTS_DIR = tmp_path
         try:
@@ -569,7 +565,7 @@ class TestFilenameSanitizationIntegration:
             assert str(path).startswith(str(tmp_path))
             # The '..' traversal components are stripped
             assert ".." not in str(path)
-            assert "malicious content" == path.read_text()
+            assert path.read_text() == "malicious content"
         finally:
             state_mod.PROJECTS_DIR = old_dir
 
@@ -608,6 +604,7 @@ class TestLLMClientBackoff:
     def test_default_retries_is_five(self):
         """Default retries should be 5 (not 3)."""
         import inspect
+
         from hive.llm_client import LLMClient
         sig = inspect.signature(LLMClient.chat)
         default = sig.parameters["retries"].default
@@ -629,7 +626,7 @@ class TestCheckDiskSpace:
 
     def test_raises_when_below_threshold(self, tmp_path):
         """Should raise DiskSpaceError when free < min_mb."""
-        from hive.hardening import check_disk_space, DiskSpaceError
+        from hive.hardening import DiskSpaceError, check_disk_space
         # Request an absurdly large threshold so any disk will fail
         with pytest.raises(DiskSpaceError, match="Insufficient disk space"):
             check_disk_space(tmp_path, min_mb=999_999_999)
@@ -646,9 +643,11 @@ class TestCheckDiskSpace:
         # Importing again inside a fresh monkeypatch scope
         monkeypatch.setenv("HIVE_MIN_DISK_MB", "999999999")
         # Need to reload the module so the module-level constant picks it up
-        import importlib, hive.hardening
+        import importlib
+
+        import hive.hardening
         importlib.reload(hive.hardening)
-        from hive.hardening import check_disk_space, DiskSpaceError
+        from hive.hardening import DiskSpaceError, check_disk_space
         with pytest.raises(DiskSpaceError):
             check_disk_space(tmp_path)
         # Restore
@@ -658,6 +657,7 @@ class TestCheckDiskSpace:
     def test_fail_open_on_os_error(self, tmp_path, monkeypatch):
         """If shutil.disk_usage raises, check_disk_space should return -1."""
         import shutil as _shutil
+
         from hive.hardening import check_disk_space
         monkeypatch.setattr(_shutil, "disk_usage", lambda _: (_ for _ in ()).throw(OSError("mocked")))
         result = check_disk_space(tmp_path, min_mb=1)

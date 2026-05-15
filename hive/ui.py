@@ -1,4 +1,4 @@
-""" 
+"""
 Hive Terminal UI — Rich terminal display for agent activity.
 
 Renders Events from the Blackboard into a beautiful terminal experience.
@@ -15,10 +15,8 @@ import os
 import sys
 import textwrap
 import time
-from typing import Callable
 
 from hive.state import Blackboard, Event, EventType, UserProfile
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  NO_COLOR / dumb terminal detection
@@ -741,6 +739,31 @@ class TerminalUI:
         if current >= total:
             print()  # newline when complete
 
+    def overall_progress(
+        self, phase_idx: int, total_phases: int, phase_name: str,
+    ) -> None:
+        """Show overall pipeline progress: 'Phase 5/13 — architecture (38%)'."""
+        pct = phase_idx / max(total_phases, 1) * 100
+        w = term_width()
+        bar_len = min(30, w - 40)
+        filled = int(bar_len * phase_idx / max(total_phases, 1))
+        bar = "▓" * filled + "░" * (bar_len - filled)
+
+        # Cost display if tracker is available
+        tracker = getattr(self.board, '_cost_tracker', None)
+        cost_str = ""
+        if tracker and tracker.total_cost > 0:
+            cost_str = f"  💰 ${tracker.total_cost:.4f}"
+            budget_pct = tracker.budget_pct()
+            if budget_pct is not None:
+                cost_str += f" ({budget_pct:.0f}% of budget)"
+
+        line = (
+            f"  [{bar}] Phase {phase_idx + 1}/{total_phases}"
+            f" — {phase_name} ({pct:.0f}%){cost_str}"
+        )
+        print(colored(line, C.CYAN))
+
     def file_status(self, filename: str, status: str, detail: str = "") -> None:
         """Show file-level status during build."""
         status_colors = {
@@ -753,11 +776,15 @@ class TerminalUI:
             "rate-limited": C.RED,
             "retrying":    C.YELLOW,
             "dropped":     C.RED,
+            "reflecting":  C.BLUE,
+            "sandbox":     C.MAGENTA,
+            "sandbox-fix": C.YELLOW,
         }
         color = status_colors.get(status, C.WHITE)
         icon = {"building": "🔨", "reviewing": "🔎", "approved": "✅",
                 "failed": "❌", "skipped": "⏭️", "revising": "🔄",
-                "rate-limited": "⚠️", "retrying": "🔁", "dropped": "🚨"}.get(status, "•")
+                "rate-limited": "⚠️", "retrying": "🔁", "dropped": "🚨",
+                "reflecting": "🔍", "sandbox": "🧪", "sandbox-fix": "🔧"}.get(status, "•")
         line = f"  {icon} {filename:30} {colored(status.upper(), color, C.BOLD)}"
         if detail:
             line += f"  {colored(detail, C.DIM)}"
@@ -990,7 +1017,7 @@ class TerminalUI:
             if agent_mems:
                 agents_with = [(a, c) for a, c in agent_mems.items() if c > 0]
                 if agents_with:
-                    print(f"    Agent memories: " + ", ".join(
+                    print("    Agent memories: " + ", ".join(
                         f"{a} ({c})" for a, c in sorted(agents_with)
                     ))
             team_count = memory_stats.get("team_entries", 0)
@@ -1060,6 +1087,45 @@ class TerminalUI:
                 print(line)
 
             print(colored(f"\n    Full logbook: {b.docs_dir / 'logbook.json'}", C.DIM))
+
+        # ── Cost & Telemetry ──
+        tracker = getattr(b, '_cost_tracker', None)
+        if tracker and tracker.total_calls > 0:
+            print()
+            print(colored("  💰 Cost & Telemetry:", C.GREEN, C.BOLD))
+            print(f"    Estimated cost: ${tracker.total_cost:.4f}")
+            print(f"    Run duration  : {tracker.run_duration:.0f}s "
+                  f"({tracker.run_duration / 60:.1f}min)")
+            if tracker.total_calls > 0:
+                avg_cost = tracker.total_cost / tracker.total_calls
+                print(f"    Avg cost/call : ${avg_cost:.5f}")
+            if tracker.cost_per_minute > 0:
+                print(f"    Burn rate     : ${tracker.cost_per_minute:.4f}/min")
+            remaining = tracker.budget_remaining()
+            if remaining is not None:
+                pct = tracker.budget_pct() or 0
+                color = C.GREEN if pct < 70 else (C.YELLOW if pct < 90 else C.RED)
+                print(colored(
+                    f"    Budget        : ${tracker.total_cost:.4f} / "
+                    f"${tracker.budget_usd:.2f} ({pct:.0f}%)",
+                    color,
+                ))
+
+            # Per-phase cost breakdown
+            phase_data = tracker.phase_summary()
+            if phase_data:
+                print()
+                print(colored("    Per-phase cost breakdown:", C.DIM))
+                for pm in phase_data:
+                    if pm["calls"] == 0:
+                        continue
+                    print(
+                        f"      {pm['phase']:14} "
+                        f"{pm['calls']:3} calls  "
+                        f"${pm['cost']:.4f}  "
+                        f"{pm['tokens']:>8,} tok  "
+                        f"{pm['duration']:.0f}s"
+                    )
 
         print()
         print(colored("═" * w, C.CYAN))

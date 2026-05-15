@@ -19,13 +19,12 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass, field, asdict
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable
 
 from hive.hardening import register_temp_path
 

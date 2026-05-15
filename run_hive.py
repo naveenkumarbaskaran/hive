@@ -40,11 +40,11 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-from hive.llm_client import llm
 from hive.crew import EPTCrew
-from hive.state import list_projects, load_checkpoint
-from hive.memory import MemoryManager
 from hive.hardening import setup_logging
+from hive.llm_client import llm
+from hive.memory import MemoryManager
+from hive.state import list_projects, load_checkpoint
 
 
 def main() -> None:

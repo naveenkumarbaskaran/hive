@@ -69,7 +69,7 @@ class ModelTier(str, Enum):
     BALANCED  = "balanced"   # PRD writing, moderate reasoning, summaries
     POWERFUL  = "powerful"   # architecture, code generation, deep reasoning
 
-    def escalate(self) -> "ModelTier":
+    def escalate(self) -> ModelTier:
         """Bump to the next tier (e.g., after a failed attempt)."""
         order = [ModelTier.FAST, ModelTier.BALANCED, ModelTier.POWERFUL]
         idx = order.index(self)
@@ -316,7 +316,7 @@ class LLMClient:
                         current_thinking = None
                         thinking_stripped = True
                         logger.info("Stripping thinking param for next attempt")
-                        print(f"  [LLM fallback] stripping thinking param for next attempt")
+                        print("  [LLM fallback] stripping thinking param for next attempt")
                     elif current_tier != ModelTier.POWERFUL and attempt >= 2:
                         prev_tier = current_tier
                         current_tier = current_tier.escalate()
@@ -373,7 +373,7 @@ class LLMClient:
             resp = httpx.get(f"{self.base_url}/v1/models", headers=headers, timeout=5)
             if resp.status_code == 200:
                 self._format = self.OPENAI_COMPAT
-                print(f"  [llm_client] detected OpenAI-compatible endpoint")
+                print("  [llm_client] detected OpenAI-compatible endpoint")
                 self._save_format_cache()
                 return self._format
         except Exception:
@@ -389,7 +389,7 @@ class LLMClient:
             )
             if resp.status_code in (200, 400, 401, 429):
                 self._format = self.ANTHROPIC_PROXY
-                print(f"  [llm_client] detected Anthropic proxy endpoint (/anthropic/v1/messages)")
+                print("  [llm_client] detected Anthropic proxy endpoint (/anthropic/v1/messages)")
                 self._save_format_cache()
                 return self._format
         except Exception:
@@ -405,7 +405,7 @@ class LLMClient:
             )
             if resp.status_code in (200, 400, 401, 429):
                 self._format = self.ANTHROPIC_NATIVE
-                print(f"  [llm_client] detected Anthropic native endpoint (/v1/messages)")
+                print("  [llm_client] detected Anthropic native endpoint (/v1/messages)")
                 self._save_format_cache()
                 return self._format
         except Exception:
@@ -413,7 +413,7 @@ class LLMClient:
 
         # Default fallback
         self._format = self.ANTHROPIC_PROXY
-        print(f"  [llm_client] defaulting to Anthropic proxy format")
+        print("  [llm_client] defaulting to Anthropic proxy format")
 
         # Persist detected format to disk cache
         self._save_format_cache()
@@ -508,7 +508,7 @@ class LLMClient:
 
         # If 400 with thinking enabled, retry without it (proxy may not support it)
         if resp.status_code == 400 and thinking and "thinking" in payload:
-            print(f"  [llm_client] thinking not supported by proxy, retrying without it")
+            print("  [llm_client] thinking not supported by proxy, retrying without it")
             del payload["thinking"]
             payload["temperature"] = 0
             resp = httpx.post(

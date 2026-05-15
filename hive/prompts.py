@@ -14,7 +14,6 @@ Design principles:
 
 from __future__ import annotations
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Scout — Research Analyst
 # ─────────────────────────────────────────────────────────────────────────────
@@ -602,6 +601,31 @@ Rewrite the COMPLETE file. Fix every issue. Produce ONLY code.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Developer — Sandbox feedback (code execution failed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEV_SANDBOX_REVISION_TASK = """\
+{full_context}
+
+APPROVED FILES:
+{approved_interfaces}
+
+YOUR CURRENT CODE for {filename}:
+```
+{current_code}
+```
+
+EXECUTION FEEDBACK — your code was actually run and produced these errors:
+{sandbox_output}
+
+This is real output from running your code. Fix the root cause.
+Common issues: syntax errors, wrong imports, missing function args, type mismatches.
+
+Rewrite the COMPLETE file. Fix every execution error. Produce ONLY code.
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Integration phase
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -633,6 +657,7 @@ INTEGRATION_TASK = """\
 ALL APPROVED FILES:
 {approved_full}
 
+{sandbox_section}
 Run integration review on the complete codebase.
 """
 
@@ -1090,5 +1115,87 @@ DOCS GENERATED:
 
 Perform your final delivery check. Be honest — if something is missing or wrong,
 say so clearly. The project summary should read like a real delivery manager wrote it.
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Developer — Self-Reflection (pre-review self-critique)
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEV_SELF_REFLECT_TASK = """\
+You just wrote the following code for {filename}:
+
+CONTRACT SPEC:
+  Purpose: {purpose}
+  Deps: {deps}
+  Exports: {exports}
+  Patterns: {patterns}
+
+YOUR CODE:
+```
+{code}
+```
+
+APPROVED FILES (interfaces you should align with):
+{approved_interfaces}
+
+Self-critique your code against the contract. Check:
+1. Are ALL exports/interfaces from the contract implemented?
+2. Are all imports correct (matching approved files' exports)?
+3. Is error handling present for edge cases?
+4. Are there any obvious bugs, type mismatches, or missing returns?
+5. Does the code follow the specified patterns?
+
+If you find issues, output the CORRECTED complete file.
+If the code looks correct, output it unchanged.
+
+Output ONLY the code — no markdown, no explanations.
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Project DNA — Post-run knowledge extraction
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROJECT_DNA_SYSTEM = """\
+You are a technical analyst extracting structured lessons from a completed
+software project. Your output will be stored as reusable knowledge for
+future projects.
+
+Be specific and actionable. Avoid generic advice. Focus on patterns that
+would help a NEW project in a similar domain.
+"""
+
+PROJECT_DNA_TASK = """\
+Analyze this completed project and extract reusable knowledge.
+
+PROJECT: {feature}
+STACK: {stack}
+FILES BUILT: {file_count} ({approved_count} approved, {skipped_count} skipped)
+TOTAL LLM CALLS: {llm_calls}
+TOTAL RETRIES: {retries}
+
+ARCHITECTURE SUMMARY:
+{architecture_summary}
+
+BUILD OUTCOMES:
+{build_outcomes}
+
+DEFERRED ISSUES:
+{deferred_issues}
+
+INTEGRATION VERDICT: {integration_verdict}
+
+OUTPUT a JSON object with these fields:
+{{
+  "stack_patterns": ["pattern1", "pattern2"],
+  "common_mistakes": ["mistake1", "mistake2"],
+  "architecture_lessons": ["lesson1", "lesson2"],
+  "review_insights": ["insight1", "insight2"],
+  "performance_notes": "any performance observations"
+}}
+
+Be specific about THIS project's outcomes. Max 3-5 items per category.
+Output ONLY the JSON.
 """
 

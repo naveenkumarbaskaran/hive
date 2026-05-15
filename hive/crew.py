@@ -27,45 +27,87 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from hive.llm_client import LLMClient, llm as _default_llm
-from hive.state import (
-    Blackboard, EventType, ResearchContext, FileEntry, Issue,
-    Amendment, UserProfile, save_checkpoint,
-)
 from hive.agents import Agent, AgentRoster, make_dev_agent, make_reviewer_agent
 from hive.connectors import (
-    ConnectorRegistry, KnowledgeItem, ConnectorType,
-    knowledge_for_agent, knowledge_context as _knowledge_context,
-    format_size, is_git_url, ingest_repo,
+    ConnectorRegistry,
+    KnowledgeItem,
+    format_size,
+    ingest_repo,
+    is_git_url,
 )
+from hive.hardening import (
+    atomic_write,
+    check_disk_space,
+    clean_code_fences,
+    get_cleanup_registry,
+    validate_code_output,
+)
+from hive.llm_client import LLMClient
+from hive.llm_client import llm as _default_llm
+from hive.memory import MemoryManager
 from hive.prompts import (
-    SCOUT_SYSTEM, SCOUT_TASK,
-    SCOUT_REPO_ANALYSIS_SYSTEM, SCOUT_REPO_ANALYSIS_TASK,
-    PENNY_INTERVIEW_SYSTEM, PENNY_INTERVIEW_TASK,
-    PENNY_PRD_SYSTEM, PENNY_PRD_TASK,
-    ARCHIE_SYSTEM, ARCHIE_TASK,
+    ALEX_REVIEW_TASK,
+    ALEX_SYSTEM,
     ARCHIE_FEASIBILITY_SYSTEM,
-    QUINN_SYSTEM, QUINN_REVIEW_TASK,
-    PIXEL_SYSTEM, PIXEL_REVIEW_TASK,
-    ALEX_SYSTEM, ALEX_REVIEW_TASK,
-    FLOW_SYSTEM,
-    JUDGE_SYSTEM, JUDGE_TASK,
-    DEV_SYSTEM, DEV_TASK, DEV_REVISION_TASK,
-    INTEGRATION_SYSTEM, INTEGRATION_TASK,
+    ARCHIE_SYSTEM,
+    ARCHIE_TASK,
+    DEV_REVISION_TASK,
+    DEV_SANDBOX_REVISION_TASK,
+    DEV_SELF_REFLECT_TASK,
+    DEV_SYSTEM,
+    DEV_TASK,
+    DM_SYSTEM,
+    DM_TASK,
+    HANDOVER_SYSTEM,
+    HANDOVER_TASK,
+    INTEGRATION_SYSTEM,
+    INTEGRATION_TASK,
+    JUDGE_SYSTEM,
+    JUDGE_TASK,
+    PACKAGING_SYSTEM,
+    PACKAGING_TASK,
+    PENNY_INTERVIEW_SYSTEM,
+    PENNY_INTERVIEW_TASK,
+    PENNY_PRD_SYSTEM,
+    PENNY_PRD_TASK,
     PENNY_RATIFY_SYSTEM,
-    RELEASE_SYSTEM, RELEASE_TASK,
-    UAT_SYSTEM, UAT_TASK,
-    SIT_SYSTEM, SIT_TASK,
-    HANDOVER_SYSTEM, HANDOVER_TASK,
-    PACKAGING_SYSTEM, PACKAGING_TASK,
-    DM_SYSTEM, DM_TASK,
+    PIXEL_REVIEW_TASK,
+    PIXEL_SYSTEM,
+    PROJECT_DNA_SYSTEM,
+    PROJECT_DNA_TASK,
+    QUINN_REVIEW_TASK,
+    QUINN_SYSTEM,
+    RELEASE_SYSTEM,
+    RELEASE_TASK,
+    SCOUT_REPO_ANALYSIS_SYSTEM,
+    SCOUT_REPO_ANALYSIS_TASK,
+    SCOUT_SYSTEM,
+    SCOUT_TASK,
+    SIT_SYSTEM,
+    SIT_TASK,
+    UAT_SYSTEM,
+    UAT_TASK,
+)
+from hive.sandbox import (
+    SANDBOX_ENABLED,
+    run_code_checks,
+    syntax_check_file,
+)
+from hive.state import (
+    Amendment,
+    Blackboard,
+    EventType,
+    FileEntry,
+    Issue,
+    ResearchContext,
+    UserProfile,
+    save_checkpoint,
+)
+from hive.telemetry import (
+    BudgetExceeded,
+    CostTracker,
 )
 from hive.ui import TerminalUI
-from hive.memory import MemoryManager
-from hive.hardening import (
-    validate_code_output, clean_code_fences, atomic_write,
-    get_cleanup_registry, check_disk_space,
-)
 
 logger = logging.getLogger("hive.crew")
 
@@ -241,6 +283,9 @@ class EPTCrew:
         # Memory
         self.memory = MemoryManager()  # initialized properly after project_slug is known
 
+        # Telemetry — cost tracking + budget enforcement
+        self.cost_tracker = CostTracker()
+
         # UI
         self.ui = TerminalUI(self.board, verbose=verbose)
 
@@ -289,17 +334,29 @@ class EPTCrew:
         critical_phases = {"welcome", "prd", "architecture", "crew", "build"}
 
         try:
-            for name, fn in phases:
+            for phase_idx, (name, fn) in enumerate(phases):
                 if name in done:
                     self.board.emit(EventType.PHASE_END, "system",
                                     f"Skipping {name} (already completed)")
                     self.ui.flush_events()
                     continue
+                # Phase progress: "Phase 5/13 — 38%"
+                self.ui.overall_progress(phase_idx, len(phases), name)
+                self.cost_tracker.start_phase(name)
                 try:
                     fn()
                 except KeyboardInterrupt:
+                    self.cost_tracker.end_phase()
                     raise  # always honour user interrupts
+                except BudgetExceeded as exc:
+                    self.cost_tracker.end_phase()
+                    self.board.emit(EventType.ERROR, "system",
+                                    f"💰 {exc}")
+                    self.ui.flush_events()
+                    self._save()
+                    raise
                 except Exception as exc:
+                    self.cost_tracker.end_phase()
                     if name in critical_phases:
                         raise  # critical phase — can't recover
                     # Non-critical phase: save checkpoint, log, continue
@@ -311,10 +368,18 @@ class EPTCrew:
                     self.ui.flush_events()
                     self._save()
                     self.board.completed_phases.append(name)
+                else:
+                    self.cost_tracker.end_phase()
         except KeyboardInterrupt:
             print("\n\n  ⚠️  Pipeline interrupted by user. Saving checkpoint...")
             self._save()
             self.board._memory_stats = self.memory.stats()
+            self.board._cost_tracker = self.cost_tracker
+            self.ui.final_summary()
+            return self.board
+        except BudgetExceeded:
+            self.board._memory_stats = self.memory.stats()
+            self.board._cost_tracker = self.cost_tracker
             self.ui.final_summary()
             return self.board
         except Exception as exc:
@@ -323,6 +388,15 @@ class EPTCrew:
             self._save()
             raise
 
+        # ── Post-pipeline: Project DNA extraction + memory distill ──
+        try:
+            if self.board.logbook and any(e.success for e in self.board.logbook):
+                self._extract_project_dna()
+        except Exception as exc:
+            logger.warning("Project DNA extraction failed: %s", exc)
+
+        self.board._memory_stats = self.memory.stats()
+        self.board._cost_tracker = self.cost_tracker
         self.ui.final_summary()
         return self.board
 
@@ -1172,6 +1246,14 @@ class EPTCrew:
         entry.code = code
         entry.revision = 1
 
+        # ── Sandbox pre-check: catch syntax/import errors before review ──
+        code = self._sandbox_check(fname, entry, dev, system)
+        entry.code = code
+
+        # ── Self-reflection: dev critiques own code before review ──
+        code = self._self_reflect(fname, entry, dev, system, meta)
+        entry.code = code
+
         # Review loop
         for attempt in range(1, self.MAX_REVISIONS + 1):
             self.ui.file_status(fname, "reviewing", f"attempt {attempt}")
@@ -1265,7 +1347,128 @@ class EPTCrew:
                 entry.code = code
                 entry.revision += 1
 
+                # Sandbox re-check after revision
+                code = self._sandbox_check(fname, entry, dev, system)
+                entry.code = code
+
         return False
+
+    def _sandbox_check(
+        self, fname: str, entry: FileEntry, dev: Agent, system: str,
+        max_sandbox_retries: int = 2,
+    ) -> str:
+        """Run the sandbox on generated code; let the dev self-correct on failure.
+
+        If the sandbox catches syntax/import errors, the dev gets immediate
+        feedback and a chance to fix without wasting a reviewer LLM call.
+        Returns the (possibly revised) code.
+        """
+        if not SANDBOX_ENABLED or not fname.endswith(".py"):
+            return entry.code
+
+        # Build the file set: all approved files + this file
+        file_set: dict[str, str] = {}
+        for name, fe in self.board.registry.items():
+            if fe.approved and fe.code:
+                file_set[name] = fe.code
+        file_set[fname] = entry.code
+
+        for sandbox_attempt in range(1, max_sandbox_retries + 1):
+            self.ui.file_status(fname, "sandbox", f"check #{sandbox_attempt}")
+            result = syntax_check_file(fname, entry.code)
+
+            if result.success:
+                self.board.emit(EventType.SPEAKING, "system",
+                                f"🧪 Sandbox: {fname} — {result.feedback}")
+                self.ui.flush_events()
+                return entry.code
+
+            # Sandbox found errors — let the dev self-correct
+            self.board.emit(EventType.ERROR, "system",
+                            f"🧪 Sandbox: {fname} — {result.feedback}")
+            self.ui.flush_events()
+
+            if sandbox_attempt >= max_sandbox_retries:
+                # Give up on sandbox self-correction, let the reviewer handle it
+                self.board.emit(EventType.SPEAKING, "system",
+                                f"🧪 Sandbox: {fname} — exceeded retries, proceeding to review")
+                self._record_mistake(dev.id,
+                                     f"Sandbox failed for {fname}: {result.output[:200]}",
+                                     context="sandbox self-correction exhausted")
+                return entry.code
+
+            # Ask the dev to fix based on real execution output
+            self.ui.file_status(fname, "sandbox-fix", f"→ {dev.name}")
+            sandbox_task = DEV_SANDBOX_REVISION_TASK.format(
+                full_context=self.board.full_context_header(),
+                approved_interfaces=self.board.approved_interfaces(),
+                filename=fname,
+                current_code=entry.code,
+                sandbox_output=result.output,
+            )
+            self._set_memory(dev.id)
+            code = dev.think(self.board, sandbox_task, system, self.client)
+            self._clear_memory()
+            self.ui.flush_events()
+
+            code = self._clean_code(code)
+            try:
+                code = validate_code_output(code, fname)
+            except ValueError as e:
+                logger.warning("Sandbox revision validation failed for %s: %s", fname, e)
+            entry.code = code
+
+        return entry.code
+
+    def _self_reflect(
+        self, fname: str, entry: FileEntry, dev: Agent, system: str,
+        meta: dict,
+    ) -> str:
+        """Dev agent self-critiques its own code before sending to reviewers.
+
+        This catches contract mismatches, missing exports, and obvious bugs
+        that would waste a reviewer LLM call. Uses FAST tier to keep costs low.
+        Returns the (possibly improved) code.
+        """
+        if not fname.endswith(".py"):
+            return entry.code
+
+        self.ui.file_status(fname, "reflecting", f"→ {dev.name}")
+
+        reflect_task = DEV_SELF_REFLECT_TASK.format(
+            filename=fname,
+            purpose=meta.get("purpose", "see contract"),
+            deps=meta.get("deps", []),
+            exports=meta.get("exports", []),
+            patterns=meta.get("patterns", []),
+            code=entry.code,
+            approved_interfaces=self.board.approved_interfaces(),
+        )
+        self._set_memory(dev.id)
+        try:
+            reflected = dev.think(self.board, reflect_task, system, self.client)
+        except Exception as exc:
+            logger.warning("Self-reflection failed for %s: %s", fname, exc)
+            self._clear_memory()
+            return entry.code
+        self._clear_memory()
+        self.ui.flush_events()
+
+        reflected = self._clean_code(reflected)
+        try:
+            reflected = validate_code_output(reflected, fname)
+        except ValueError:
+            # Reflection produced invalid output — keep original
+            return entry.code
+
+        # Only accept if reflection changed something
+        if reflected.strip() != entry.code.strip():
+            self.board.emit(EventType.SPEAKING, dev.id,
+                            f"🔍 Self-reflection improved {fname}")
+            self._record_pattern(dev.id,
+                                 f"Self-reflection caught issues in {fname}",
+                                 context="pre-review self-correction")
+        return reflected
 
     def _review_file(self, fname: str, entry: FileEntry) -> tuple[str, list[Issue]]:
         """Run all applicable reviewers on a file."""
@@ -1434,10 +1637,33 @@ class EPTCrew:
         self.ui.phase_header("Integration Testing")
         self.ui.flush_events()
 
+        # ── Sandbox: run all approved files together ──────────────────────
+        sandbox_section = ""
+        if SANDBOX_ENABLED:
+            all_files = {
+                name: fe.code for name, fe in self.board.registry.items()
+                if fe.approved and fe.code
+            }
+            if all_files:
+                self.board.emit(EventType.SPEAKING, "system",
+                                f"🧪 Running sandbox on {len(all_files)} approved files...")
+                self.ui.flush_events()
+                sb_result = run_code_checks(all_files)
+                status = "PASS ✓" if sb_result.success else "FAIL ✗"
+                self.board.emit(EventType.SPEAKING, "system",
+                                f"🧪 Sandbox integration: {status}")
+                self.ui.flush_events()
+                sandbox_section = (
+                    "CODE EXECUTION RESULTS (files were actually run in a sandbox):\n"
+                    f"Status: {status}\n{sb_result.output}\n"
+                    "Use these real results to inform your review.\n"
+                )
+
         quinn = AgentRoster.QUINN
         task = INTEGRATION_TASK.format(
             full_context=self.board.full_context_header(),
             approved_full=self.board.approved_full(),
+            sandbox_section=sandbox_section,
         )
         self._set_memory("quinn")
         resp = quinn.think(self.board, task, INTEGRATION_SYSTEM, self.client,
@@ -1885,3 +2111,119 @@ class EPTCrew:
     def _clean_code(code: str) -> str:
         """Strip markdown code fences from LLM output (uses hardening module)."""
         return clean_code_fences(code)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Cost tracking — sync logbook entries to cost tracker
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _sync_costs(self) -> None:
+        """Sync recent logbook entries to the cost tracker.
+
+        Called periodically (after each phase) to keep cost/budget up to date.
+        Only processes entries not yet tracked (idempotent via _last_cost_idx).
+        """
+        start_idx = getattr(self, '_last_cost_idx', 0)
+        for entry in self.board.logbook[start_idx:]:
+            self.cost_tracker.record_call(
+                model=entry.model_used,
+                input_tokens=entry.input_tokens,
+                output_tokens=entry.output_tokens,
+                cache_read_tokens=entry.cache_read_tokens,
+                retries=entry.retries,
+                success=entry.success,
+            )
+        self._last_cost_idx = len(self.board.logbook)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Project DNA — extract reusable knowledge after run
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _extract_project_dna(self) -> None:
+        """Extract structured lessons from the completed run.
+
+        Uses an LLM call to analyze build outcomes and extract reusable
+        patterns for future projects. Saves as project_dna.json and
+        feeds into global memory.
+        """
+        approved = [e for e in self.board.registry.values() if e.approved]
+        skipped = [e for e in self.board.registry.values() if e.skip_reason]
+
+        # Build outcomes summary
+        build_outcomes: list[str] = []
+        for entry in self.board.registry.values():
+            status = "✅ approved" if entry.approved else f"❌ {entry.skip_reason or 'failed'}"
+            rev_note = f" ({entry.revision} revisions)" if entry.revision > 1 else ""
+            deferred = f" [{len(entry.deferred_issues)} deferred]" if entry.deferred_issues else ""
+            build_outcomes.append(f"  {entry.name}: {status}{rev_note}{deferred}")
+
+        deferred_text = "\n".join(
+            f"  - [{i.severity}] {fname}: {i.description}"
+            for fname, i in self.board.all_deferred[:20]
+        ) or "(none)"
+
+        # Stack detection
+        stack = "unknown"
+        if self.board.research:
+            s = self.board.research.stack
+            if isinstance(s, dict):
+                stack = f"{s.get('language', '?')} / {s.get('framework', '?')}"
+            elif isinstance(s, str):
+                stack = s
+
+        arch_lines = self.board.architecture.splitlines()[:30]
+
+        task = PROJECT_DNA_TASK.format(
+            feature=self.feature,
+            stack=stack,
+            file_count=len(self.board.registry),
+            approved_count=len(approved),
+            skipped_count=len(skipped),
+            llm_calls=len(self.board.logbook),
+            retries=sum(e.retries for e in self.board.logbook),
+            architecture_summary="\n".join(arch_lines),
+            build_outcomes="\n".join(build_outcomes),
+            deferred_issues=deferred_text,
+            integration_verdict=self.board.integration_verdict,
+        )
+
+        self.board.emit(EventType.WRITING, "system",
+                        "🧬 Extracting Project DNA...")
+        self.ui.flush_events()
+
+        scout = AgentRoster.SCOUT
+        try:
+            resp = scout.think(
+                self.board, task, PROJECT_DNA_SYSTEM, self.client, max_tokens=2048,
+            )
+            dna = _parse_json(resp)
+        except Exception as exc:
+            logger.warning("Project DNA parse failed: %s", exc)
+            dna = {"error": str(exc), "raw": resp if 'resp' in dir() else ""}
+
+        # Save to docs
+        dna_path = self.board.docs_dir / "project_dna.json"
+        atomic_write(dna_path, json.dumps(dna, indent=2, default=str))
+        self.board.emit(EventType.WRITING, "system",
+                        f"🧬 Project DNA saved: {dna_path}")
+        self.ui.flush_events()
+
+        # Feed structured lessons into global memory
+        for category in ("stack_patterns", "common_mistakes",
+                         "architecture_lessons", "review_insights"):
+            items = dna.get(category, [])
+            if isinstance(items, list):
+                for item in items[:5]:
+                    self._record_lesson(
+                        "scout",
+                        f"[{category}] {item}",
+                        context=f"project={self.board.project_slug}",
+                    )
+
+        # Distill to global memory
+        new_lessons = self.memory.distill_to_global()
+        self.memory.save_global()
+        self.memory.save()
+        if new_lessons:
+            self.board.emit(EventType.SPEAKING, "system",
+                            f"🧠 {len(new_lessons)} lessons distilled to global memory")
+            self.ui.flush_events()

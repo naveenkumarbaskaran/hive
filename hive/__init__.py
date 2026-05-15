@@ -9,15 +9,26 @@ Internal package name: hive (EPT — Empowered Product Team)
 
 __version__ = "1.0.0"
 
-from hive.agents import Agent, AgentRoster, DEV_POOL, make_dev_agent
-from hive.state import (
-    Blackboard, Event, EventType, ResearchContext, FileEntry,
-    Issue, Amendment, SignOff, save_checkpoint, load_checkpoint, list_projects,
-)
-from hive.crew import EPTCrew
-from hive.ui import TerminalUI
-from hive.memory import MemoryManager, MemoryEntry
+from hive.agents import DEV_POOL, Agent, AgentRoster, make_dev_agent
 from hive.connectors import ConnectorRegistry, KnowledgeItem
+from hive.crew import EPTCrew
+from hive.memory import MemoryEntry, MemoryManager
+from hive.sandbox import Sandbox, SandboxResult, run_code_checks, syntax_check_file
+from hive.state import (
+    Amendment,
+    Blackboard,
+    Event,
+    EventType,
+    FileEntry,
+    Issue,
+    ResearchContext,
+    SignOff,
+    list_projects,
+    load_checkpoint,
+    save_checkpoint,
+)
+from hive.telemetry import BudgetExceeded, CostTracker, estimate_cost, model_context_window
+from hive.ui import TerminalUI
 
 __all__ = [
     "__version__",
@@ -28,4 +39,6 @@ __all__ = [
     "TerminalUI",
     "MemoryManager", "MemoryEntry",
     "ConnectorRegistry", "KnowledgeItem",
+    "Sandbox", "SandboxResult", "run_code_checks", "syntax_check_file",
+    "CostTracker", "BudgetExceeded", "estimate_cost", "model_context_window",
 ]

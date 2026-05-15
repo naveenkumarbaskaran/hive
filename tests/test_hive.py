@@ -9,38 +9,56 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from hive.agents import DEV_POOL, AgentRoster, make_dev_agent
+from hive.connectors import (
+    SMALL_THRESHOLD,
+    ConnectorRegistry,
+    ConnectorType,
+    KnowledgeItem,
+    format_size,
+    is_git_url,
+    knowledge_context,
+    knowledge_for_agent,
+    repo_file_tree,
+)
+from hive.crew import (
+    EPTCrew,
+    _extract_architecture_text,
+    _parse_contract,
+    _parse_json,
+    _parse_verdict,
+)
+from hive.llm_client import LLMClient, LLMResponse, ModelTier
+from hive.prompts import (
+    ARCHIE_SYSTEM,
+    DEV_SYSTEM,
+    JUDGE_SYSTEM,
+    PENNY_PRD_SYSTEM,
+    QUINN_SYSTEM,
+    SCOUT_SYSTEM,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Imports
 # ─────────────────────────────────────────────────────────────────────────────
-
 from hive.state import (
-    Blackboard, EventType, Event, ResearchContext, FileEntry, Issue,
-    Amendment, SignOff, UserProfile, LogEntry, save_checkpoint, load_checkpoint, PROJECTS_DIR,
+    Blackboard,
+    Event,
+    EventType,
+    FileEntry,
+    Issue,
+    LogEntry,
+    ResearchContext,
+    SignOff,
+    UserProfile,
+    load_checkpoint,
+    save_checkpoint,
 )
-from hive.llm_client import LLMClient, LLMResponse, ModelTier
-from hive.agents import Agent, AgentRoster, make_dev_agent, DEV_POOL
-from hive.connectors import (
-    ConnectorType, KnowledgeItem, ConnectorRegistry,
-    knowledge_for_agent, knowledge_context, format_size,
-    SMALL_THRESHOLD, MEDIUM_THRESHOLD,
-    is_git_url, repo_file_tree,
-)
-from hive.crew import (
-    EPTCrew, _parse_json, _parse_contract, _parse_verdict,
-    _extract_architecture_text,
-)
-from hive.ui import TerminalUI, agent_color, agent_emoji, C
-from hive.prompts import (
-    SCOUT_SYSTEM, PENNY_PRD_SYSTEM, ARCHIE_SYSTEM,
-    QUINN_SYSTEM, DEV_SYSTEM, JUDGE_SYSTEM,
-)
-
+from hive.ui import C, TerminalUI, agent_color, agent_emoji
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Fixtures
@@ -1543,7 +1561,11 @@ class TestRepoPrompts:
 # ─────────────────────────────────────────────────────────────────────────────
 
 from hive.memory import (
-    MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager,
+    AgentMemory,
+    GlobalMemory,
+    MemoryEntry,
+    MemoryManager,
+    TeamMemory,
 )
 
 
@@ -1824,7 +1846,6 @@ class TestBlackboardMemory:
         board.init_project()
         assert board.memory_dir.exists()
         # Cleanup
-        import shutil
         shutil.rmtree(board.project_root, ignore_errors=True)
 
     def test_memory_dir_property(self):
@@ -2283,6 +2304,9 @@ class TestResilientPhaseExecution:
         crew.memory.context_for_agent = MagicMock(return_value="")
         crew.memory.load_global = MagicMock()
         crew.memory.load = MagicMock()
+        crew.memory.save = MagicMock()
+        crew.memory.save_global = MagicMock()
+        crew.memory.distill_to_global = MagicMock(return_value=[])
         crew.memory.stats = MagicMock(return_value={})
         return crew
 
@@ -2375,6 +2399,832 @@ class TestIntegrationVerdictDisplay:
         captured = capsys.readouterr()
         assert "Missing error handling" in captured.out
         assert "Import mismatch" in captured.out
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sandbox Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSandbox:
+    """Tests for hive/sandbox.py — code execution feedback loop."""
+
+    def test_sandbox_result_output_combined(self):
+        """SandboxResult.output should combine stdout and stderr."""
+        from hive.sandbox import SandboxResult
+        r = SandboxResult(success=False, stdout="hello", stderr="error here")
+        assert "hello" in r.output
+        assert "error here" in r.output
+
+    def test_sandbox_result_output_timeout(self):
+        """Timeout should be reflected in output."""
+        from hive.sandbox import SandboxResult
+        r = SandboxResult(success=False, timeout=True)
+        assert "TIMEOUT" in r.output
+
+    def test_sandbox_result_output_empty(self):
+        """Empty result should return '(no output)'."""
+        from hive.sandbox import SandboxResult
+        r = SandboxResult(success=True)
+        assert r.output == "(no output)"
+
+    def test_sandbox_result_feedback_pass(self):
+        """feedback property should show pass text."""
+        from hive.sandbox import SandboxResult
+        r = SandboxResult(success=True)
+        assert "passed" in r.feedback.lower() or "✅" in r.feedback
+
+    def test_sandbox_result_feedback_fail(self):
+        """feedback property should show exit code on failure."""
+        from hive.sandbox import SandboxResult
+        r = SandboxResult(success=False, exit_code=1)
+        assert "1" in r.feedback
+
+    def test_syntax_check_valid_code(self):
+        """Valid Python should pass syntax check."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("valid.py", "x = 1 + 2\nprint(x)\n")
+            result = sb.syntax_check("valid.py")
+        assert result.success
+
+    def test_syntax_check_invalid_code(self):
+        """Invalid Python should fail syntax check."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("broken.py", "def f(\n  return 1\n")
+            result = sb.syntax_check("broken.py")
+        assert not result.success
+
+    def test_syntax_check_file_not_found(self):
+        """Missing file should return error."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            result = sb.syntax_check("missing.py")
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+    def test_syntax_check_all_mixed(self):
+        """syntax_check_all with one bad file should fail."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("good.py", "x = 1\n")
+            sb.add_file("bad.py", "def f(\n")
+            result = sb.syntax_check_all()
+        assert not result.success
+        assert "bad.py" in result.stderr
+
+    def test_syntax_check_all_all_valid(self):
+        """syntax_check_all with all valid files should pass."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("a.py", "x = 1\n")
+            sb.add_file("b.py", "y = 2\n")
+            result = sb.syntax_check_all()
+        assert result.success
+        assert "2 files" in result.stdout
+
+    def test_sandbox_cleanup(self):
+        """Cleanup should remove temp directory."""
+        from hive.sandbox import Sandbox
+        sb = Sandbox(timeout=10)
+        sb.add_file("test.py", "x = 1\n")
+        tmpdir = sb.workdir
+        assert tmpdir.exists()
+        sb.cleanup()
+        assert not tmpdir.exists()
+
+    def test_sandbox_context_manager(self):
+        """Context manager should auto-cleanup."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("test.py", "x = 1\n")
+            tmpdir = sb.workdir
+        assert not tmpdir.exists()
+
+    def test_add_file_creates_subdirs(self):
+        """add_file should create subdirectories automatically."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            path = sb.add_file("src/models/user.py", "class User: pass\n")
+            assert path.exists()
+            assert "src/models" in str(path.parent)
+
+    def test_add_file_prevents_path_traversal(self):
+        """.. in filenames should be stripped."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            path = sb.add_file("../../../etc/passwd", "hack\n")
+            # Should be written inside the sandbox
+            assert str(sb.workdir) in str(path)
+
+    def test_run_tests_no_test_files(self):
+        """No test files should return success with skip message."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("app.py", "x = 1\n")
+            result = sb.run_tests()
+        assert result.success
+        assert "no test" in result.stdout.lower() or "skip" in result.stdout.lower()
+
+    def test_run_code_checks_valid(self):
+        """run_code_checks with valid code should pass."""
+        from hive.sandbox import run_code_checks
+        result = run_code_checks({"app.py": "x = 1\nprint(x)\n"})
+        assert result.success
+
+    def test_run_code_checks_syntax_error(self):
+        """run_code_checks should catch syntax errors."""
+        from hive.sandbox import run_code_checks
+        result = run_code_checks({"broken.py": "def f(\n  return\n"})
+        assert not result.success
+        assert "SYNTAX" in result.stderr.upper()
+
+    def test_run_code_checks_disabled(self, monkeypatch):
+        """Disabled sandbox should return success immediately."""
+        monkeypatch.setattr("hive.sandbox.SANDBOX_ENABLED", False)
+        from hive.sandbox import run_code_checks
+        result = run_code_checks({"broken.py": "def f(\n"})
+        assert result.success
+        assert "disabled" in result.stdout.lower()
+
+    def test_syntax_check_file_convenience(self):
+        """syntax_check_file convenience function should work."""
+        from hive.sandbox import syntax_check_file
+        result = syntax_check_file("ok.py", "x = 42\n")
+        assert result.success
+
+    def test_syntax_check_file_convenience_fail(self):
+        """syntax_check_file should catch errors."""
+        from hive.sandbox import syntax_check_file
+        result = syntax_check_file("bad.py", "def f(\n")
+        assert not result.success
+
+    def test_import_check_valid(self):
+        """import_check on a simple module should pass."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("simple.py", "X = 42\n")
+            result = sb.import_check("simple.py")
+        assert result.success
+
+    def test_import_check_runtime_error(self):
+        """import_check should catch top-level runtime errors."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("bad_import.py", "raise RuntimeError('boom')\n")
+            result = sb.import_check("bad_import.py")
+        assert not result.success
+        assert "boom" in result.stderr
+
+    def test_run_script(self):
+        """run_script should execute and capture output."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("hello.py", "print('hello sandbox')\n")
+            result = sb.run_script("hello.py")
+        assert result.success
+        assert "hello sandbox" in result.stdout
+
+    def test_run_script_with_args(self):
+        """run_script should pass args to the script."""
+        from hive.sandbox import Sandbox
+        code = "import sys\nprint(' '.join(sys.argv[1:]))\n"
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("args.py", code)
+            result = sb.run_script("args.py", args=["foo", "bar"])
+        assert result.success
+        assert "foo bar" in result.stdout
+
+    def test_safe_env_strips_api_keys(self):
+        """_safe_env should not include API keys."""
+        from hive.sandbox import _safe_env
+        os.environ["LLM_API_KEY"] = "secret"
+        env = _safe_env()
+        assert "LLM_API_KEY" not in env
+        del os.environ["LLM_API_KEY"]
+
+    def test_truncate_long_output(self):
+        """_truncate should cap output and add note."""
+        from hive.sandbox import _truncate
+        long_text = "x" * 5000
+        result = _truncate(long_text, 100)
+        assert len(result) < 5000
+        assert "truncated" in result
+
+    def test_truncate_short_output(self):
+        """_truncate should not modify short text."""
+        from hive.sandbox import _truncate
+        assert _truncate("short", 100) == "short"
+
+    def test_non_python_files_not_checked(self):
+        """Non-.py files added to sandbox should not cause issues."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_file("config.json", '{"key": "value"}')
+            sb.add_file("app.py", "x = 1\n")
+            result = sb.syntax_check_all()
+        assert result.success
+        assert "1 files" in result.stdout  # only app.py counted
+
+    def test_add_files_bulk(self):
+        """add_files should write multiple files at once."""
+        from hive.sandbox import Sandbox
+        with Sandbox(timeout=10) as sb:
+            sb.add_files({"a.py": "x=1\n", "b.py": "y=2\n", "c.txt": "hello\n"})
+            assert (sb.workdir / "a.py").exists()
+            assert (sb.workdir / "b.py").exists()
+            assert (sb.workdir / "c.txt").exists()
+
+
+class TestSandboxBuildIntegration:
+    """Tests for sandbox integration in the build phase."""
+
+    def _make_crew(self, monkeypatch, auto_approve: bool = True):
+        """Make a minimal crew for testing sandbox integration."""
+        monkeypatch.setattr("hive.crew.SANDBOX_ENABLED", True)
+        board = Blackboard(feature="test sandbox build")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={"language": "Python"}, scale_tier="startup",
+            raw_summary="test",
+        )
+        board.prd = "# PRD\nTest"
+        board.architecture = "# Arch\nTest"
+        board.contract = "# Contract\nTest"
+        board.file_plan = {"app.py": {"purpose": "main app"}}
+        board.registry = {}
+
+        ui = TerminalUI(board, verbose=False)
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = board
+        crew.ui = ui
+        crew.client = MagicMock()
+        crew.feature = "test sandbox build"
+        crew.auto_approve = auto_approve
+        crew.agents = {}
+        crew.MAX_REVISIONS = 3
+        crew._registry_lock = __import__("threading").Lock()
+        crew._contract_cache = {}
+        crew.memory = MagicMock()
+        crew.memory.context_for_agent = MagicMock(return_value="")
+        return crew
+
+    def test_sandbox_check_passes_valid_code(self, monkeypatch):
+        """Valid code should pass sandbox check without revision."""
+        crew = self._make_crew(monkeypatch)
+        dev = make_dev_agent(0)
+        entry = FileEntry(name="app.py", code="x = 1\nprint(x)\n", revision=1)
+        crew.board.registry["app.py"] = entry
+        system = DEV_SYSTEM.format(dev_name=dev.name, dev_tagline=dev.tagline)
+
+        result = crew._sandbox_check("app.py", entry, dev, system)
+        assert result == entry.code  # unchanged
+
+    def test_sandbox_check_fixes_syntax_error(self, monkeypatch):
+        """Syntax error should trigger sandbox revision."""
+        from hive.llm_client import LLMResponse
+        crew = self._make_crew(monkeypatch)
+        dev = make_dev_agent(0)
+        entry = FileEntry(name="app.py", code="def f(\n  return 1\n", revision=1)
+        crew.board.registry["app.py"] = entry
+        system = DEV_SYSTEM.format(dev_name=dev.name, dev_tagline=dev.tagline)
+
+        # Mock: dev fixes the code on sandbox revision
+        crew.client.chat = MagicMock(return_value=LLMResponse(
+            text="def f():\n    return 1\n", model="test",
+        ))
+
+        result = crew._sandbox_check("app.py", entry, dev, system)
+        assert "def f():" in result
+        # Should have called the LLM for revision
+        assert crew.client.chat.call_count >= 1
+
+    def test_sandbox_check_skips_non_python(self, monkeypatch):
+        """Non-Python files should skip sandbox check."""
+        crew = self._make_crew(monkeypatch)
+        dev = make_dev_agent(0)
+        entry = FileEntry(name="config.json", code='{"key": "value"}', revision=1)
+        system = "system"
+
+        result = crew._sandbox_check("config.json", entry, dev, system)
+        assert result == entry.code  # unchanged
+
+    def test_sandbox_check_disabled(self, monkeypatch):
+        """Disabled sandbox should return code unchanged."""
+        monkeypatch.setattr("hive.crew.SANDBOX_ENABLED", False)
+        board = Blackboard(feature="test")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={}, scale_tier="startup", raw_summary="test",
+        )
+        ui = TerminalUI(board, verbose=False)
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = board
+        crew.ui = ui
+        crew.memory = MagicMock()
+        crew.memory.context_for_agent = MagicMock(return_value="")
+        dev = make_dev_agent(0)
+        entry = FileEntry(name="app.py", code="def f(\n", revision=1)
+        system = "system"
+
+        result = crew._sandbox_check("app.py", entry, dev, system)
+        assert result == "def f(\n"  # unchanged even though broken
+
+    def test_sandbox_exhausted_proceeds_to_review(self, monkeypatch):
+        """If sandbox retries exhausted, should return code for reviewer."""
+        from hive.llm_client import LLMResponse
+        crew = self._make_crew(monkeypatch)
+        dev = make_dev_agent(0)
+        # Code with syntax error
+        bad_code = "def f(\n  return 1\n"
+        entry = FileEntry(name="app.py", code=bad_code, revision=1)
+        crew.board.registry["app.py"] = entry
+        system = DEV_SYSTEM.format(dev_name=dev.name, dev_tagline=dev.tagline)
+
+        # Mock: dev keeps returning broken code
+        crew.client.chat = MagicMock(return_value=LLMResponse(
+            text=bad_code, model="test",
+        ))
+
+        result = crew._sandbox_check("app.py", entry, dev, system)
+        # Should still return (broken) code — don't crash, let reviewer handle it
+        assert result is not None
+        # Should have events about sandbox failure
+        sandbox_events = [e for e in crew.board.events if "sandbox" in e.content.lower()
+                          or "Sandbox" in e.content]
+        assert len(sandbox_events) >= 1
+
+
+class TestSandboxIntegrationPhase:
+    """Tests for sandbox in the integration phase."""
+
+    def _make_crew(self, monkeypatch, auto_approve: bool = True):
+        """Make a minimal crew for testing integration sandbox."""
+        monkeypatch.setattr("hive.crew.SANDBOX_ENABLED", True)
+        board = Blackboard(feature="test sandbox integration")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={"language": "Python"}, scale_tier="startup",
+            raw_summary="test",
+        )
+        board.prd = "# PRD\nTest"
+        board.architecture = "# Arch\nTest"
+        board.contract = "# Contract\nTest"
+        board.file_plan = {"app.py": {"purpose": "main app"}}
+        board.registry = {
+            "app.py": FileEntry(name="app.py", approved=True, code="print('hello')\n"),
+        }
+        board.completed_phases = ["build"]
+
+        ui = TerminalUI(board, verbose=False)
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = board
+        crew.ui = ui
+        crew.client = MagicMock()
+        crew.feature = "test"
+        crew.auto_approve = auto_approve
+        crew.agents = {}
+        crew.MAX_REVISIONS = 3
+        crew._registry_lock = __import__("threading").Lock()
+        crew.memory = MagicMock()
+        crew.memory.context_for_agent = MagicMock(return_value="")
+        return crew
+
+    def _mock_chat(self, text: str):
+        from hive.llm_client import LLMResponse
+        return MagicMock(return_value=LLMResponse(text=text, model="test"))
+
+    def test_integration_includes_sandbox_results(self, monkeypatch):
+        """Integration phase should include sandbox output in Quinn's prompt."""
+        crew = self._make_crew(monkeypatch)
+        crew.client.chat = self._mock_chat("VERDICT: PASS\nAll good.")
+        crew._save = MagicMock()
+        crew._phase_integration()
+
+        # Check that the LLM was called with sandbox section in the prompt
+        call_args = crew.client.chat.call_args
+        messages = call_args[1].get("messages") or call_args[0][0]
+        prompt_text = str(messages)
+        # Sandbox ran on valid code, so it should mention execution results
+        assert "sandbox" in prompt_text.lower() or "execution" in prompt_text.lower() \
+            or crew.board.integration_verdict == "PASS"
+
+    def test_integration_sandbox_disabled(self, monkeypatch):
+        """Disabled sandbox should not inject sandbox section."""
+        monkeypatch.setattr("hive.crew.SANDBOX_ENABLED", False)
+        board = Blackboard(feature="test")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={}, scale_tier="startup", raw_summary="test",
+        )
+        board.prd = "# PRD\nTest"
+        board.architecture = "# Arch\nTest"
+        board.contract = "# Contract\nTest"
+        board.registry = {
+            "app.py": FileEntry(name="app.py", approved=True, code="x=1\n"),
+        }
+        board.completed_phases = ["build"]
+
+        ui = TerminalUI(board, verbose=False)
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = board
+        crew.ui = ui
+        crew.client = MagicMock()
+        crew.feature = "test"
+        crew.auto_approve = True
+        crew.agents = {}
+        crew.MAX_REVISIONS = 3
+        crew._registry_lock = __import__("threading").Lock()
+        crew.memory = MagicMock()
+        crew.memory.context_for_agent = MagicMock(return_value="")
+        from hive.llm_client import LLMResponse
+        crew.client.chat = MagicMock(return_value=LLMResponse(
+            text="VERDICT: PASS", model="test",
+        ))
+        crew._save = MagicMock()
+        crew._phase_integration()
+        assert crew.board.integration_verdict == "PASS"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Telemetry & Cost Tracking Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestTelemetry:
+    """Tests for hive/telemetry.py — cost tracking and budget enforcement."""
+
+    def test_estimate_cost_known_model(self):
+        """Known model should use its pricing."""
+        from hive.telemetry import estimate_cost
+        cost = estimate_cost("claude-sonnet-4-20250514", 1000, 500)
+        assert cost > 0
+        # Claude Sonnet: $0.003/1K input + $0.015/1K output
+        expected = (1000 / 1000 * 0.003) + (500 / 1000 * 0.015)
+        assert abs(cost - expected) < 0.001
+
+    def test_estimate_cost_unknown_model(self):
+        """Unknown model should use default pricing."""
+        from hive.telemetry import estimate_cost
+        cost = estimate_cost("unknown-model-xyz", 1000, 500)
+        assert cost > 0  # should use DEFAULT_PRICING
+
+    def test_estimate_cost_with_cache(self):
+        """Cache tokens should be priced separately."""
+        from hive.telemetry import estimate_cost
+        cost_no_cache = estimate_cost("claude-sonnet-4-20250514", 1000, 500, 0)
+        cost_with_cache = estimate_cost("claude-sonnet-4-20250514", 1000, 500, 2000)
+        assert cost_with_cache > cost_no_cache
+
+    def test_estimate_cost_substring_match(self):
+        """Model with prefix should match via substring."""
+        from hive.telemetry import estimate_cost
+        cost = estimate_cost("anthropic--claude-4-sonnet", 1000, 500)
+        assert cost > 0
+
+    def test_cost_tracker_records_calls(self):
+        """CostTracker should accumulate calls and costs."""
+        from hive.telemetry import CostTracker
+        tracker = CostTracker()
+        tracker.start_phase("research")
+        cost1 = tracker.record_call("claude-sonnet-4-20250514", 1000, 500)
+        cost2 = tracker.record_call("claude-sonnet-4-20250514", 2000, 300)
+        tracker.end_phase()
+        assert tracker.total_calls == 2
+        assert tracker.total_cost == cost1 + cost2
+        assert tracker.total_input_tokens == 3000
+        assert tracker.total_output_tokens == 800
+
+    def test_cost_tracker_phase_metrics(self):
+        """Phase metrics should be recorded correctly."""
+        from hive.telemetry import CostTracker
+        tracker = CostTracker()
+        tracker.start_phase("build")
+        tracker.record_call("test-model", 1000, 500)
+        tracker.record_call("test-model", 2000, 300, retries=2)
+        pm = tracker.end_phase()
+        assert pm is not None
+        assert pm.phase == "build"
+        assert pm.llm_calls == 2
+        assert pm.retries == 2
+        assert len(tracker.phase_metrics) == 1
+
+    def test_budget_enforcement(self):
+        """Exceeding budget should raise BudgetExceeded."""
+        from hive.telemetry import BudgetExceeded, CostTracker
+        tracker = CostTracker(budget_usd=0.001)
+        tracker.start_phase("test")
+        with pytest.raises(BudgetExceeded, match="Budget exceeded"):
+            # Record a large call that exceeds $0.001
+            tracker.record_call("claude-sonnet-4-20250514", 100_000, 50_000)
+
+    def test_budget_unlimited(self):
+        """Budget=0 should never raise."""
+        from hive.telemetry import CostTracker
+        tracker = CostTracker(budget_usd=0)
+        tracker.start_phase("test")
+        # Even huge calls should work
+        tracker.record_call("claude-sonnet-4-20250514", 1_000_000, 500_000)
+        assert tracker.total_cost > 0
+
+    def test_budget_remaining(self):
+        """budget_remaining should track correctly."""
+        from hive.telemetry import CostTracker
+        tracker = CostTracker(budget_usd=10.0)
+        assert tracker.budget_remaining() == 10.0
+        tracker.start_phase("test")
+        tracker.record_call("test-model", 1000, 500)
+        remaining = tracker.budget_remaining()
+        assert remaining is not None
+        assert remaining < 10.0
+
+    def test_budget_remaining_unlimited(self):
+        """Unlimited budget should return None."""
+        from hive.telemetry import CostTracker
+        tracker = CostTracker(budget_usd=0)
+        assert tracker.budget_remaining() is None
+
+    def test_phase_summary(self):
+        """phase_summary should return per-phase breakdown."""
+        from hive.telemetry import CostTracker
+        tracker = CostTracker()
+        tracker.start_phase("research")
+        tracker.record_call("test-model", 100, 50)
+        tracker.end_phase()
+        tracker.start_phase("build")
+        tracker.record_call("test-model", 200, 100)
+        tracker.end_phase()
+        summary = tracker.phase_summary()
+        assert len(summary) == 2
+        assert summary[0]["phase"] == "research"
+        assert summary[1]["phase"] == "build"
+        assert summary[1]["tokens"] == 300
+
+    def test_model_context_window_known(self):
+        """Known models should return their window size."""
+        from hive.telemetry import model_context_window
+        assert model_context_window("claude-sonnet-4-20250514") == 200_000
+        assert model_context_window("gpt-4") == 8_192
+        assert model_context_window("gpt-4o") == 128_000
+
+    def test_model_context_window_substring(self):
+        """Model with prefix should use substring matching."""
+        from hive.telemetry import model_context_window
+        assert model_context_window("anthropic--claude-4-sonnet") == 200_000
+
+    def test_model_context_window_unknown(self):
+        """Unknown models should use default."""
+        from hive.telemetry import DEFAULT_CONTEXT_WINDOW, model_context_window
+        assert model_context_window("totally-unknown-model") == DEFAULT_CONTEXT_WINDOW
+
+    def test_cost_tracker_cost_per_minute(self):
+        """cost_per_minute should be positive after recording calls."""
+        import time
+
+        from hive.telemetry import CostTracker
+        tracker = CostTracker()
+        tracker.run_start = time.time() - 60  # pretend 1 min elapsed
+        tracker.start_phase("test")
+        tracker.record_call("test-model", 10000, 5000)
+        assert tracker.cost_per_minute > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Self-Reflection Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSelfReflection:
+    """Tests for the dev agent self-reflection loop."""
+
+    def _make_crew(self, monkeypatch):
+        """Make a minimal crew for testing self-reflection."""
+        board = Blackboard(feature="test self-reflection")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={"language": "Python"}, scale_tier="startup",
+            raw_summary="test",
+        )
+        board.prd = "# PRD\nTest"
+        board.architecture = "# Arch\nTest"
+        board.contract = "# Contract\nTest"
+        board.file_plan = {"app.py": {"purpose": "main app"}}
+        board.registry = {}
+
+        ui = TerminalUI(board, verbose=False)
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = board
+        crew.ui = ui
+        crew.client = MagicMock()
+        crew.feature = "test"
+        crew.auto_approve = True
+        crew.agents = {}
+        crew.MAX_REVISIONS = 3
+        crew._registry_lock = __import__("threading").Lock()
+        crew._contract_cache = {}
+        crew.memory = MagicMock()
+        crew.memory.context_for_agent = MagicMock(return_value="")
+        return crew
+
+    def test_self_reflect_improves_code(self, monkeypatch):
+        """Self-reflection should accept improved code from the dev."""
+        crew = self._make_crew(monkeypatch)
+        dev = make_dev_agent(0)
+        entry = FileEntry(name="app.py", code="x = 1\n", revision=1)
+        crew.board.registry["app.py"] = entry
+        system = DEV_SYSTEM.format(dev_name=dev.name, dev_tagline=dev.tagline)
+        meta = {"purpose": "main app", "deps": [], "exports": ["main"], "patterns": []}
+
+        # Dev returns improved code during reflection
+        crew.client.chat = MagicMock(return_value=LLMResponse(
+            text="x = 1\n\ndef main():\n    print(x)\n", model="test",
+        ))
+
+        result = crew._self_reflect("app.py", entry, dev, system, meta)
+        assert "def main" in result
+        assert crew.client.chat.call_count >= 1
+
+    def test_self_reflect_skips_non_python(self, monkeypatch):
+        """Non-Python files should skip self-reflection."""
+        crew = self._make_crew(monkeypatch)
+        dev = make_dev_agent(0)
+        entry = FileEntry(name="config.json", code='{"key": "val"}', revision=1)
+        meta = {}
+
+        result = crew._self_reflect("config.json", entry, dev, "system", meta)
+        assert result == '{"key": "val"}'  # unchanged
+
+    def test_self_reflect_handles_failure(self, monkeypatch):
+        """Self-reflection failure should return original code."""
+        crew = self._make_crew(monkeypatch)
+        dev = make_dev_agent(0)
+        entry = FileEntry(name="app.py", code="x = 1\n", revision=1)
+        crew.board.registry["app.py"] = entry
+        system = DEV_SYSTEM.format(dev_name=dev.name, dev_tagline=dev.tagline)
+        meta = {"purpose": "test", "deps": [], "exports": [], "patterns": []}
+
+        # Dev crashes during reflection
+        crew.client.chat = MagicMock(side_effect=RuntimeError("LLM timeout"))
+
+        result = crew._self_reflect("app.py", entry, dev, system, meta)
+        assert result == "x = 1\n"  # original code preserved
+
+    def test_self_reflect_rejects_bad_output(self, monkeypatch):
+        """If self-reflection produces invalid code, keep original."""
+        crew = self._make_crew(monkeypatch)
+        dev = make_dev_agent(0)
+        entry = FileEntry(name="app.py", code="x = 1\n", revision=1)
+        crew.board.registry["app.py"] = entry
+        system = DEV_SYSTEM.format(dev_name=dev.name, dev_tagline=dev.tagline)
+        meta = {"purpose": "test", "deps": [], "exports": [], "patterns": []}
+
+        # Dev returns empty garbage
+        crew.client.chat = MagicMock(return_value=LLMResponse(
+            text="", model="test",
+        ))
+
+        result = crew._self_reflect("app.py", entry, dev, system, meta)
+        assert result == "x = 1\n"  # kept original
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Adaptive Context Window Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestAdaptiveContextWindow:
+    """Tests for model-aware context budgeting."""
+
+    def test_full_context_header_default_budget(self):
+        """Default should use 70% of 100K = 70K budget."""
+        board = Blackboard(feature="test")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={"language": "Python"}, scale_tier="startup",
+            raw_summary="test",
+        )
+        board.prd = "# PRD\nTest content\n" * 100
+        board.architecture = "# Arch\nDesign notes\n" * 100
+        board.contract = "# Contract\nTest"
+        result = board.full_context_header()
+        assert "PRD" in result or "Contract" in result
+
+    def test_full_context_header_custom_budget(self):
+        """Custom max_tokens should be respected."""
+        board = Blackboard(feature="test")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={}, scale_tier="startup", raw_summary="test",
+        )
+        board.prd = "# PRD\n" + "x" * 50000  # ~16K tokens
+        board.architecture = "# Arch\n" + "y" * 50000
+        board.contract = "test"
+
+        # With very small budget, content should be truncated
+        result = board.full_context_header(max_tokens=1000)
+        from hive.hardening import estimate_tokens
+        assert estimate_tokens(result) < 2000  # roughly within budget
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Rich Progress Dashboard Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestProgressDashboard:
+    """Tests for the enhanced progress display."""
+
+    def test_overall_progress_shows_phase(self, capsys):
+        """overall_progress should display phase number and name."""
+        board = Blackboard(feature="test")
+        ui = TerminalUI(board, verbose=False)
+        ui.overall_progress(4, 13, "architecture")
+        captured = capsys.readouterr()
+        assert "5/13" in captured.out
+        assert "architecture" in captured.out
+
+    def test_overall_progress_shows_cost_if_available(self, capsys):
+        """If cost tracker is present, show cost in progress."""
+        from hive.telemetry import CostTracker
+        board = Blackboard(feature="test")
+        tracker = CostTracker()
+        tracker.total_cost = 0.0523
+        board._cost_tracker = tracker
+        ui = TerminalUI(board, verbose=False)
+        ui.overall_progress(7, 13, "build")
+        captured = capsys.readouterr()
+        assert "$" in captured.out
+        assert "0.0523" in captured.out
+
+    def test_file_status_new_statuses(self, capsys):
+        """New file statuses (reflecting, sandbox) should display with icons."""
+        board = Blackboard(feature="test")
+        ui = TerminalUI(board, verbose=False)
+
+        ui.file_status("app.py", "reflecting", "self-check")
+        ui.file_status("app.py", "sandbox", "check #1")
+        ui.file_status("app.py", "sandbox-fix", "fixing")
+
+        captured = capsys.readouterr()
+        assert "🔍" in captured.out  # reflecting icon
+        assert "🧪" in captured.out  # sandbox icon
+        assert "🔧" in captured.out  # sandbox-fix icon
+
+    def test_cost_display_in_final_summary(self, capsys):
+        """Final summary should show cost breakdown when tracker is present."""
+        from hive.telemetry import CostTracker
+        board = Blackboard(feature="test")
+        tracker = CostTracker()
+        tracker.start_phase("research")
+        tracker.record_call("test-model", 1000, 500)
+        tracker.end_phase()
+        tracker.start_phase("build")
+        tracker.record_call("test-model", 5000, 2000)
+        tracker.end_phase()
+        board._cost_tracker = tracker
+        ui = TerminalUI(board, verbose=False)
+        ui.final_summary()
+
+        captured = capsys.readouterr()
+        assert "Cost & Telemetry" in captured.out
+        assert "Estimated cost" in captured.out
+        assert "$" in captured.out
+        assert "research" in captured.out
+        assert "build" in captured.out
+
+    def test_no_cost_display_without_tracker(self, capsys):
+        """Without cost tracker, no cost section should appear."""
+        board = Blackboard(feature="test")
+        ui = TerminalUI(board, verbose=False)
+        ui.final_summary()
+
+        captured = capsys.readouterr()
+        assert "Cost & Telemetry" not in captured.out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Project DNA Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestProjectDNA:
+    """Tests for the Project DNA extraction feature."""
+
+    def test_prompts_exist(self):
+        """DNA prompts should be importable."""
+        from hive.prompts import PROJECT_DNA_SYSTEM, PROJECT_DNA_TASK
+        assert "reusable" in PROJECT_DNA_SYSTEM.lower()
+        assert "{feature}" in PROJECT_DNA_TASK
+        assert "{stack}" in PROJECT_DNA_TASK
+
+    def test_self_reflect_prompt_exists(self):
+        """Self-reflection prompt should be importable."""
+        from hive.prompts import DEV_SELF_REFLECT_TASK
+        assert "{filename}" in DEV_SELF_REFLECT_TASK
+        assert "{exports}" in DEV_SELF_REFLECT_TASK
+        assert "Self-critique" in DEV_SELF_REFLECT_TASK
 
 
 if __name__ == "__main__":

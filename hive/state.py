@@ -36,12 +36,15 @@ import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
-from hive.connectors import KnowledgeItem, knowledge_for_agent as _knowledge_for_agent
+from hive.connectors import KnowledgeItem
+from hive.connectors import knowledge_for_agent as _knowledge_for_agent
 from hive.hardening import (
-    atomic_write, sanitize_filename, validate_checkpoint_data,
-    check_disk_space, CHECKPOINT_SCHEMA_VERSION,
+    CHECKPOINT_SCHEMA_VERSION,
+    atomic_write,
+    check_disk_space,
+    sanitize_filename,
+    validate_checkpoint_data,
 )
 
 logger = logging.getLogger("hive.state")
@@ -455,7 +458,7 @@ class Blackboard:
                 EventType.LLM_INCIDENT, entry.agent_id,
                 f"⚡ {entry.retries} retries"
                 + (f" (tier escalated {entry.tier_requested}→{entry.tier_used})" if entry.tier_escalated else "")
-                + (f" (thinking stripped)" if entry.thinking_stripped else "")
+                + (" (thinking stripped)" if entry.thinking_stripped else "")
                 + f" | model={entry.model_used} | {entry.duration_s:.1f}s",
             )
         if not entry.success:
@@ -572,8 +575,15 @@ class Blackboard:
             return self.user_profile.as_block()
         return ""
 
-    def full_context_header(self) -> str:
-        from hive.hardening import budget_context, estimate_tokens
+    def full_context_header(self, max_tokens: int = 100_000) -> str:
+        """Build the full context string for agent prompts.
+
+        Args:
+            max_tokens: token budget for context. Callers can pass a
+                model-aware limit from telemetry.model_context_window().
+                Defaults to 100K (safe for most models).
+        """
+        from hive.hardening import budget_context
         sections = []
         if self.user_profile:
             sections.append(("user_profile", self.user_profile.as_block(), 1))
@@ -586,7 +596,9 @@ class Blackboard:
         ij = self.interjections_context()
         if ij:
             sections.append(("interjections", ij, 1))
-        return budget_context(sections, max_tokens=100_000)
+        # Reserve 30% of window for the actual task prompt + output
+        context_budget = int(max_tokens * 0.7)
+        return budget_context(sections, max_tokens=context_budget)
 
     def dep_layers(self) -> list[list[str]]:
         """Topological sort of dep_graph into parallel layers."""
