@@ -22,8 +22,8 @@ No LangChain. No CrewAI. Just Python 3.12+, httpx, and structured prompts.
 | Package name | `hive` (PyPI: `hive-ept`) |
 | CLI command | `hive` |
 | Entry point | `run_hive.py` → `main()` |
-| Core package | `hive/` (12 modules + plugins subpackage) |
-| Tests | `tests/test_hive.py` (~497), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 677 total |
+| Core package | `hive/` (13 modules + plugins subpackage) |
+| Tests | `tests/test_hive.py` (~536), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 715 total |
 | Python | ≥ 3.12 |
 | Build system | Hatchling |
 | Only runtime dep | `httpx` |
@@ -36,16 +36,17 @@ hive/                     ← repo root
 ├── hive/                 ← core Python package
 │   ├── __init__.py       ← exports + __version__
 │   ├── agents.py         ← Agent dataclass, AgentRoster, DEV_POOL
-│   ├── connectors.py     ← KnowledgeItem, ConnectorRegistry, git repo ingest
+│   ├── connectors.py     ← KnowledgeItem, ConnectorRegistry, git repo ingest, brownfield codebase_index
 │   ├── crew.py           ← EPTCrew: 13-phase orchestrator (largest file ~2572 lines)
+│   ├── dashboard.py      ← SSE-based web dashboard (DashboardServer), real-time progress
 │   ├── hardening.py      ← atomic_write, file_lock, sanitize, budget, disk checks
 │   ├── llm_client.py     ← LLMClient, ModelTier, auto-detect backend, retry+escalate
 │   ├── memory.py         ← 3-tier memory: Agent → Team → Global
 │   ├── prompts.py        ← system prompts + task templates for all agents
 │   ├── sandbox.py        ← Code execution loop: syntax check, import check, test runner, multi-file test execution
-│   ├── state.py          ← Blackboard, Events, checkpoints, save/load
+│   ├── state.py          ← Blackboard, Events, checkpoints, save/load, approved_signatures()
 │   ├── telemetry.py      ← CostTracker, BudgetExceeded, estimate_cost, model_context_window
-│   ├── ui.py             ← ANSI terminal UI, sign-off prompts, progress dashboard
+│   ├── ui.py             ← ANSI terminal UI, sign-off prompts, progress dashboard, build_preview()
 │   └── plugins/          ← Optional plugin system (protocol-based)
 │       ├── __init__.py   ← Plugin exports
 │       ├── base.py       ← 5 plugin protocols (Knowledge, Guidelines, System, TestData, Lifecycle)
@@ -54,7 +55,7 @@ hive/                     ← repo root
 ├── run_hive.py           ← CLI entry point (argparse)
 ├── llm_client.py         ← backward-compat shim → hive/llm_client.py
 ├── tests/
-│   ├── test_hive.py      ← ~497 unit tests (NO real LLM calls)
+│   ├── test_hive.py      ← ~536 unit tests (NO real LLM calls)
 │   ├── test_hardening.py ← hardening + integration tests
 │   └── test_plugins.py   ← plugin system tests (~92)
 ├── projects/             ← runtime output (gitignored)
@@ -119,6 +120,11 @@ ruff format hive/ tests/ run_hive.py
 - **Test Execution Feedback Loop** (`hive/sandbox.py` + `hive/crew.py`): `run_test_in_context()` stages all project files and runs real pytest during build; `_test_execution_check()` feeds failures back to dev for fixing (up to `MAX_TEST_FIX_ATTEMPTS` rounds)
 - **Integration Test Fix Loop** (`hive/crew.py`): `_integration_test_fix_loop()` isolates per-file test failures after `run_code_checks`, routes to responsible devs, and re-runs up to `MAX_INTEGRATION_FIXES` rounds
 - **Plugin System** (`hive/plugins/`): optional protocol-based plugins for knowledge, guidelines, systems, test data, lifecycle hooks
+- **Context Compression** (`hive/state.py`): `Blackboard.approved_signatures()` extracts only function/class/import/assignment signatures from approved files (70-80% smaller); used in self-reflection, test-fix, and integration-fix prompts for token efficiency
+- **Multi-Provider LLM** (`hive/llm_client.py`): per-tier provider routing — different base URLs, API keys, and format hints per capability tier via `resolve_endpoint(tier)`; thread-safe via thread-local storage for parallel builds
+- **Interactive Build Mode** (`hive/ui.py` + `hive/crew.py`): `--interactive` CLI flag enables `build_preview()` — user can [a]pprove / [f]eedback / [s]kip each file during build; feedback loops back to dev agent
+- **Live Dashboard** (`hive/dashboard.py`): SSE-based web dashboard (`DashboardServer`); `--dashboard [PORT]` flag (default 8765); real-time phase progress, file status, cost tracking, event log; stdlib only (no new deps)
+- **Brownfield Mode** (`hive/connectors.py` + `hive/crew.py`): `--modify PATH` for existing codebase modification; `codebase_index(root)` does AST-based Python signature extraction + regex-based JS/TS/Java/Go analysis; auto-attaches structure to architecture prompt
 
 ## Key Design Decisions — DO NOT VIOLATE
 
@@ -168,6 +174,15 @@ ruff format hive/ tests/ run_hive.py
 | `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
 | `HIVE_MAX_INTEGRATION_FIXES` | `2` | Max rounds of integration test fix loop |
 | `HIVE_MAX_TEST_FIX_ATTEMPTS` | `2` | Max attempts to fix test failures during build |
+| `LLM_BASE_URL_FAST` | (none) | Per-tier LLM endpoint for FAST tier |
+| `LLM_BASE_URL_BALANCED` | (none) | Per-tier LLM endpoint for BALANCED tier |
+| `LLM_BASE_URL_POWERFUL` | (none) | Per-tier LLM endpoint for POWERFUL tier |
+| `LLM_API_KEY_FAST` | (none) | Per-tier API key for FAST tier |
+| `LLM_API_KEY_BALANCED` | (none) | Per-tier API key for BALANCED tier |
+| `LLM_API_KEY_POWERFUL` | (none) | Per-tier API key for POWERFUL tier |
+| `LLM_FORMAT_FAST` | (none) | Per-tier format hint for FAST tier |
+| `LLM_FORMAT_BALANCED` | (none) | Per-tier format hint for BALANCED tier |
+| `LLM_FORMAT_POWERFUL` | (none) | Per-tier format hint for POWERFUL tier |
 
 ## Common Tasks for Claude
 

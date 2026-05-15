@@ -39,44 +39,47 @@ logger = logging.getLogger("hive.connectors")
 #  Connector types
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class ConnectorType(Enum):
-    DOCUMENT  = "document"       # .md .txt .rst — business / domain docs
-    CODEBASE  = "codebase"       # .py .js .ts .java — reference code
-    TEST_CASE = "test_case"      # test_*.py, *.spec.ts — existing tests
-    DATA_FILE = "data_file"      # .csv .json .yaml — sample / live data
-    API_SPEC  = "api_spec"       # openapi.yaml, swagger.json, .graphql
-    SCHEMA    = "schema"         # .sql .ddl .prisma — database schemas
-    GIT_REPO  = "git_repo"       # cloned git repository (reference impl)
+    DOCUMENT = "document"  # .md .txt .rst — business / domain docs
+    CODEBASE = "codebase"  # .py .js .ts .java — reference code
+    TEST_CASE = "test_case"  # test_*.py, *.spec.ts — existing tests
+    DATA_FILE = "data_file"  # .csv .json .yaml — sample / live data
+    API_SPEC = "api_spec"  # openapi.yaml, swagger.json, .graphql
+    SCHEMA = "schema"  # .sql .ddl .prisma — database schemas
+    GIT_REPO = "git_repo"  # cloned git repository (reference impl)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Knowledge item — one ingested artefact
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class KnowledgeItem:
     """One ingested knowledge artefact from the user."""
-    source_type: str              # ConnectorType.value
-    source_path: str              # original path provided by user
-    label: str                    # human-readable name
-    content: str                  # processed text (full or truncated)
-    raw_size: int                 # original size in bytes
+
+    source_type: str  # ConnectorType.value
+    source_path: str  # original path provided by user
+    label: str  # human-readable name
+    content: str  # processed text (full or truncated)
+    raw_size: int  # original size in bytes
     was_summarized: bool = False  # True if Scout compressed it
-    summary: str = ""             # Scout's summary (for large items)
-    tags: list[str] = field(default_factory=list)      # routing tags
-    metadata: dict = field(default_factory=dict)        # extra info
+    summary: str = ""  # Scout's summary (for large items)
+    tags: list[str] = field(default_factory=list)  # routing tags
+    metadata: dict = field(default_factory=dict)  # extra info
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Size tiers
 # ─────────────────────────────────────────────────────────────────────────────
 
-SMALL_THRESHOLD  = 8_192      # 8 KB  → inject in full
-MEDIUM_THRESHOLD = 51_200     # 50 KB → truncate (first+last N lines)
+SMALL_THRESHOLD = 8_192  # 8 KB  → inject in full
+MEDIUM_THRESHOLD = 51_200  # 50 KB → truncate (first+last N lines)
 # > 50 KB  → summarize via Scout
 
-TRUNCATE_HEAD = 120           # lines to keep from start
-TRUNCATE_TAIL = 40            # lines to keep from end
+TRUNCATE_HEAD = 120  # lines to keep from start
+TRUNCATE_TAIL = 40  # lines to keep from end
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,25 +142,66 @@ _TEST_PATTERNS: list[re.Pattern] = [
 
 # Directories / files to skip
 _SKIP_DIRS = {
-    "__pycache__", ".git", ".svn", "node_modules", ".venv", "venv",
-    ".pytest_cache", ".mypy_cache", ".tox", "dist", "build", ".next",
-    ".idea", ".vscode",
+    "__pycache__",
+    ".git",
+    ".svn",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".tox",
+    "dist",
+    "build",
+    ".next",
+    ".idea",
+    ".vscode",
 }
 _SKIP_FILES = {".DS_Store", "Thumbs.db", ".gitignore", ".gitkeep"}
 
 # Extensions to skip (binary / non-readable)
 _SKIP_EXTS = {
-    ".pyc", ".pyo", ".class", ".o", ".so", ".dylib", ".dll",
-    ".exe", ".bin", ".wasm", ".png", ".jpg", ".jpeg", ".gif",
-    ".bmp", ".ico", ".svg", ".webp", ".mp3", ".mp4", ".wav",
-    ".avi", ".zip", ".tar", ".gz", ".rar", ".7z", ".jar",
-    ".whl", ".egg", ".pdf", ".docx", ".pptx", ".xlsx",
+    ".pyc",
+    ".pyo",
+    ".class",
+    ".o",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".bin",
+    ".wasm",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".ico",
+    ".svg",
+    ".webp",
+    ".mp3",
+    ".mp4",
+    ".wav",
+    ".avi",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".rar",
+    ".7z",
+    ".jar",
+    ".whl",
+    ".egg",
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".xlsx",
 }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  ConnectorRegistry — detection, reading, registration
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class ConnectorRegistry:
     """Detects file types, reads content, and creates KnowledgeItems."""
@@ -219,11 +263,7 @@ class ConnectorRegistry:
         head = lines[:TRUNCATE_HEAD]
         tail = lines[-TRUNCATE_TAIL:]
         omitted = total - TRUNCATE_HEAD - TRUNCATE_TAIL
-        return "\n".join(
-            head
-            + [f"\n# ... ({omitted} lines omitted from middle) ...\n"]
-            + tail
-        )
+        return "\n".join(head + [f"\n# ... ({omitted} lines omitted from middle) ...\n"] + tail)
 
     # ── Tagging ─────────────────────────────────────────────────────────
 
@@ -243,7 +283,9 @@ class ConnectorRegistry:
     # ── Single-file ingest ──────────────────────────────────────────────
 
     @classmethod
-    def ingest_file(cls, path: Path, force_type: ConnectorType | None = None) -> KnowledgeItem | None:
+    def ingest_file(
+        cls, path: Path, force_type: ConnectorType | None = None
+    ) -> KnowledgeItem | None:
         """Ingest a single file into a KnowledgeItem.
 
         Returns None if the file type is unrecognized or unreadable.
@@ -454,21 +496,35 @@ class ConnectorRegistry:
 
 # Maps agent role keywords → the connector types they should receive
 AGENT_ROUTING: dict[str, set[str]] = {
-    "scout":         {ct.value for ct in ConnectorType},  # everything
-    "penny":         {ConnectorType.DOCUMENT.value, ConnectorType.DATA_FILE.value,
-                      ConnectorType.GIT_REPO.value},
-    "archie":        {ConnectorType.API_SPEC.value, ConnectorType.SCHEMA.value,
-                      ConnectorType.CODEBASE.value, ConnectorType.GIT_REPO.value},
-    "quinn":         {ConnectorType.TEST_CASE.value, ConnectorType.API_SPEC.value,
-                      ConnectorType.GIT_REPO.value},
-    "pixel":         {ConnectorType.DOCUMENT.value, ConnectorType.CODEBASE.value},
-    "alex":          {ConnectorType.DOCUMENT.value, ConnectorType.CODEBASE.value},
-    "flow":          {ConnectorType.DOCUMENT.value, ConnectorType.CODEBASE.value},
-    "judge":         {ConnectorType.TEST_CASE.value, ConnectorType.API_SPEC.value},
-    "dev":           {ConnectorType.CODEBASE.value, ConnectorType.API_SPEC.value,
-                      ConnectorType.SCHEMA.value, ConnectorType.GIT_REPO.value},
-    "integration":   {ConnectorType.TEST_CASE.value, ConnectorType.API_SPEC.value},
-    "release":       {ConnectorType.DOCUMENT.value},
+    "scout": {ct.value for ct in ConnectorType},  # everything
+    "penny": {
+        ConnectorType.DOCUMENT.value,
+        ConnectorType.DATA_FILE.value,
+        ConnectorType.GIT_REPO.value,
+    },
+    "archie": {
+        ConnectorType.API_SPEC.value,
+        ConnectorType.SCHEMA.value,
+        ConnectorType.CODEBASE.value,
+        ConnectorType.GIT_REPO.value,
+    },
+    "quinn": {
+        ConnectorType.TEST_CASE.value,
+        ConnectorType.API_SPEC.value,
+        ConnectorType.GIT_REPO.value,
+    },
+    "pixel": {ConnectorType.DOCUMENT.value, ConnectorType.CODEBASE.value},
+    "alex": {ConnectorType.DOCUMENT.value, ConnectorType.CODEBASE.value},
+    "flow": {ConnectorType.DOCUMENT.value, ConnectorType.CODEBASE.value},
+    "judge": {ConnectorType.TEST_CASE.value, ConnectorType.API_SPEC.value},
+    "dev": {
+        ConnectorType.CODEBASE.value,
+        ConnectorType.API_SPEC.value,
+        ConnectorType.SCHEMA.value,
+        ConnectorType.GIT_REPO.value,
+    },
+    "integration": {ConnectorType.TEST_CASE.value, ConnectorType.API_SPEC.value},
+    "release": {ConnectorType.DOCUMENT.value},
 }
 
 
@@ -587,8 +643,16 @@ def fetch_url(url: str, timeout: int = 30) -> tuple[str | None, int, str]:
     mime = content_type.split(";")[0].strip().lower()
 
     # Reject binary content types
-    if mime.startswith(("image/", "audio/", "video/", "application/octet-stream",
-                        "application/zip", "application/pdf")):
+    if mime.startswith(
+        (
+            "image/",
+            "audio/",
+            "video/",
+            "application/octet-stream",
+            "application/zip",
+            "application/pdf",
+        )
+    ):
         logger.warning("Skipping binary URL %s (content-type: %s)", url, mime)
         return None, 0, ""
 
@@ -687,7 +751,8 @@ def repo_file_tree(repo_dir: Path, max_depth: int = 4) -> str:
         children = sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name))
         # Filter out skippable dirs/files
         children = [
-            c for c in children
+            c
+            for c in children
             if c.name not in _SKIP_DIRS
             and not c.name.startswith(".")
             and c.name not in _SKIP_FILES
@@ -728,3 +793,126 @@ def ingest_repo(
         item.metadata["git_url"] = url
 
     return items, repo_path, tree
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Brownfield: codebase structure indexing for --modify mode
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _python_signatures(source: str, filepath: str) -> list[str]:
+    """Extract class/function/import signatures from Python source using AST."""
+    import ast
+
+    sigs: list[str] = []
+    try:
+        tree = ast.parse(source, filename=filepath)
+    except SyntaxError:
+        return sigs
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            bases = ", ".join(ast.unparse(b) for b in node.bases) if node.bases else ""
+            sigs.append(f"class {node.name}({bases}):")
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
+                    args = ast.unparse(item.args)
+                    prefix = "async def" if isinstance(item, ast.AsyncFunctionDef) else "def"
+                    ret = f" -> {ast.unparse(item.returns)}" if item.returns else ""
+                    sigs.append(f"    {prefix} {item.name}({args}){ret}")
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            # Top-level functions only (not nested in classes — those are above)
+            if not any(
+                isinstance(p, ast.ClassDef)
+                for p in ast.walk(tree)
+                if hasattr(p, "body") and node in getattr(p, "body", [])
+            ):
+                args = ast.unparse(node.args)
+                prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+                ret = f" -> {ast.unparse(node.returns)}" if node.returns else ""
+                sigs.append(f"{prefix} {node.name}({args}){ret}")
+        elif isinstance(node, ast.ImportFrom):
+            names = ", ".join(a.name for a in node.names[:5])
+            if len(node.names) > 5:
+                names += ", ..."
+            sigs.append(f"from {node.module or '.'} import {names}")
+
+    return sigs
+
+
+def _generic_signatures(source: str) -> list[str]:
+    """Extract function/class-like signatures from non-Python source via regex."""
+    sigs: list[str] = []
+    patterns = [
+        # JS/TS: export function foo(...), export class Foo, const foo = (...) =>
+        re.compile(r"^(export\s+)?(async\s+)?function\s+\w+\s*\([^)]*\)", re.MULTILINE),
+        re.compile(r"^(export\s+)?class\s+\w+", re.MULTILINE),
+        re.compile(r"^(export\s+)?(const|let)\s+\w+\s*=\s*(async\s+)?\([^)]*\)\s*=>", re.MULTILINE),
+        # Java/Go: public class Foo, func foo(
+        re.compile(
+            r"^(public|private|protected)?\s*(static\s+)?(class|interface)\s+\w+", re.MULTILINE
+        ),
+        re.compile(r"^func\s+\w+", re.MULTILINE),
+    ]
+    for pat in patterns:
+        for m in pat.finditer(source):
+            line = m.group(0).strip()
+            if len(line) <= 120:
+                sigs.append(line)
+    return sigs[:50]  # cap
+
+
+def codebase_index(root: Path, max_files: int = 300) -> str:
+    """Build a structured index of a codebase for brownfield modify mode.
+
+    Returns a Markdown-formatted string with:
+    - File tree
+    - Per-file signatures (AST-based for Python, regex for others)
+
+    This is injected into the architecture prompt so Archie understands
+    the existing codebase structure before proposing modifications.
+    """
+    tree = repo_file_tree(root, max_depth=5)
+    sections: list[str] = [f"## Existing Codebase Structure\n\n```\n{tree}\n```\n"]
+
+    file_index: list[str] = []
+    count = 0
+    for fpath in sorted(root.rglob("*")):
+        if count >= max_files:
+            break
+        if not fpath.is_file():
+            continue
+        if fpath.suffix in _SKIP_EXTS:
+            continue
+        if any(part in _SKIP_DIRS for part in fpath.parts):
+            continue
+        if fpath.name in _SKIP_FILES:
+            continue
+
+        rel = fpath.relative_to(root)
+        ctype = ConnectorRegistry.detect_type(fpath)
+        if ctype not in (ConnectorType.CODEBASE, ConnectorType.TEST_CASE):
+            continue
+
+        try:
+            source = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        count += 1
+        if fpath.suffix == ".py":
+            sigs = _python_signatures(source, str(fpath))
+        else:
+            sigs = _generic_signatures(source)
+
+        if sigs:
+            sig_block = "\n".join(f"  {s}" for s in sigs[:30])
+            file_index.append(f"### {rel}\n{sig_block}")
+        else:
+            line_count = len(source.splitlines())
+            file_index.append(f"### {rel}  ({line_count} lines)")
+
+    if file_index:
+        sections.append("## File Signatures\n\n" + "\n\n".join(file_index))
+
+    return "\n\n".join(sections)

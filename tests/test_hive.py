@@ -5160,3 +5160,398 @@ class TestCrewMaxIntegrationFixes:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MVP 2 — Context Compression (approved_signatures)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestApprovedSignatures:
+    """Tests for Blackboard.approved_signatures() context compression."""
+
+    def test_empty_registry(self):
+        bb = Blackboard(feature="test")
+        result = bb.approved_signatures()
+        assert result == "(none)"
+
+    def test_extracts_def_and_class(self):
+        bb = Blackboard(feature="test")
+        bb.registry["foo.py"] = FileEntry(
+            name="foo.py",
+            code="import os\n\nclass Foo:\n    def bar(self):\n        pass\n\ndef baz():\n    return 1\n",
+            approved=True,
+        )
+        result = bb.approved_signatures()
+        assert "class Foo:" in result
+        assert "def bar" in result
+        assert "def baz" in result
+        assert "import os" in result
+        # Should NOT include the body
+        assert "pass" not in result
+        assert "return 1" not in result
+
+    def test_extracts_assignments(self):
+        bb = Blackboard(feature="test")
+        bb.registry["config.py"] = FileEntry(
+            name="config.py",
+            code="MAX_RETRIES = 3\nDEBUG = True\n\ndef helper():\n    x = 10\n    return x\n",
+            approved=True,
+        )
+        result = bb.approved_signatures()
+        assert "MAX_RETRIES = 3" in result
+        assert "DEBUG = True" in result
+        # Local variable assignment should NOT appear (it's indented)
+        assert "x = 10" not in result
+
+    def test_skips_unapproved_files(self):
+        bb = Blackboard(feature="test")
+        bb.registry["a.py"] = FileEntry(name="a.py", code="def a():\n    pass\n", approved=True)
+        bb.registry["b.py"] = FileEntry(name="b.py", code="def b():\n    pass\n", approved=False)
+        result = bb.approved_signatures()
+        assert "a.py" in result
+        assert "b.py" not in result
+
+    def test_much_smaller_than_full_code(self):
+        """Signatures should be significantly smaller than full code."""
+        bb = Blackboard(feature="test")
+        big_code = "\n".join([
+            "import os",
+            "import sys",
+            "class Big:",
+            "    def method1(self):",
+            "        # 50 lines of logic",
+            *[f"        x{i} = {i}" for i in range(50)],
+            "    def method2(self, arg):",
+            *[f"        y{i} = {i}" for i in range(50)],
+            "def standalone():",
+            *[f"    z{i} = {i}" for i in range(30)],
+        ])
+        bb.registry["big.py"] = FileEntry(name="big.py", code=big_code, approved=True)
+        sigs = bb.approved_signatures()
+        assert len(sigs) < len(big_code) * 0.5  # at least 50% smaller
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MVP 3 — Multi-Provider LLM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMultiProviderLLM:
+    """Tests for per-tier provider overrides."""
+
+    def test_no_tier_config_by_default(self):
+        client = LLMClient(base_url="http://fake", api_key="k", default_model="m1")
+        assert client._tier_config == {}
+
+    def test_tier_config_from_env(self, monkeypatch):
+        monkeypatch.setenv("LLM_BASE_URL_FAST", "http://fast-endpoint")
+        monkeypatch.setenv("LLM_API_KEY_FAST", "fast-key")
+        monkeypatch.setenv("LLM_FORMAT_FAST", "openai")
+        client = LLMClient(base_url="http://default", api_key="default-key", default_model="m1")
+        assert "fast" in client._tier_config
+        assert client._tier_config["fast"]["base_url"] == "http://fast-endpoint"
+        assert client._tier_config["fast"]["api_key"] == "fast-key"
+        assert client._tier_config["fast"]["format"] == "openai"
+
+    def test_tier_config_powerful_from_env(self, monkeypatch):
+        monkeypatch.setenv("LLM_BASE_URL_POWERFUL", "http://powerful")
+        monkeypatch.setenv("LLM_API_KEY_POWERFUL", "pow-key")
+        client = LLMClient(base_url="http://default", api_key="default-key", default_model="m1")
+        assert "powerful" in client._tier_config
+        assert client._tier_config["powerful"]["base_url"] == "http://powerful"
+        assert client._tier_config["powerful"]["api_key"] == "pow-key"
+
+    def test_resolve_endpoint_default(self):
+        client = LLMClient(base_url="http://default", api_key="k", default_model="m1")
+        url, key, fmt = client.resolve_endpoint(ModelTier.BALANCED)
+        assert url == "http://default"
+        assert key == "k"
+        assert fmt is None
+
+    def test_resolve_endpoint_with_override(self, monkeypatch):
+        monkeypatch.setenv("LLM_BASE_URL_FAST", "http://fast")
+        monkeypatch.setenv("LLM_API_KEY_FAST", "fast-key")
+        client = LLMClient(base_url="http://default", api_key="default-key", default_model="m1")
+        url, key, fmt = client.resolve_endpoint(ModelTier.FAST)
+        assert url == "http://fast"
+        assert key == "fast-key"
+        # BALANCED should still use default
+        url2, key2, _ = client.resolve_endpoint(ModelTier.BALANCED)
+        assert url2 == "http://default"
+        assert key2 == "default-key"
+
+    def test_resolve_endpoint_inherits_defaults(self, monkeypatch):
+        """When only base_url is set, api_key should fall back to default."""
+        monkeypatch.setenv("LLM_BASE_URL_FAST", "http://fast")
+        client = LLMClient(base_url="http://default", api_key="shared-key", default_model="m1")
+        url, key, _ = client.resolve_endpoint(ModelTier.FAST)
+        assert url == "http://fast"
+        assert key == "shared-key"
+
+    def test_effective_url_default(self):
+        client = LLMClient(base_url="http://default", api_key="k", default_model="m1")
+        assert client._effective_url == "http://default"
+        assert client._effective_key == "k"
+
+    def test_effective_url_thread_local(self):
+        client = LLMClient(base_url="http://default", api_key="k", default_model="m1")
+        client._set_effective_endpoint("http://override", "override-key")
+        assert client._effective_url == "http://override"
+        assert client._effective_key == "override-key"
+        client._clear_effective_endpoint()
+        assert client._effective_url == "http://default"
+        assert client._effective_key == "k"
+
+    def test_format_cache_per_url(self):
+        client = LLMClient(base_url="http://default", api_key="k", default_model="m1")
+        client._format_cache["http://fast"] = "openai_compat"
+        client._format_cache["http://default"] = "anthropic_proxy"
+        assert client._format_cache["http://fast"] == "openai_compat"
+        assert client._format_cache["http://default"] == "anthropic_proxy"
+
+    def test_repr_shows_tier_overrides(self, monkeypatch):
+        monkeypatch.setenv("LLM_BASE_URL_FAST", "http://fast")
+        monkeypatch.setenv("LLM_BASE_URL_POWERFUL", "http://powerful")
+        client = LLMClient(base_url="http://default", api_key="k", default_model="m1")
+        r = repr(client)
+        assert "tier_overrides=" in r
+        assert "fast" in r
+        assert "powerful" in r
+
+    def test_detect_format_with_override(self):
+        client = LLMClient(base_url="http://default", api_key="k", default_model="m1")
+        fmt = client._detect_format(url_override="http://fast", fmt_override="openai")
+        assert fmt == "openai"  # mapped via format override
+        # Should be cached
+        assert client._format_cache["http://fast"] == "openai"
+
+    def test_detect_format_anthropic_native(self):
+        client = LLMClient(base_url="http://default", api_key="k", default_model="m1")
+        fmt = client._detect_format(url_override="https://api.anthropic.com", fmt_override=None)
+        assert fmt == client.ANTHROPIC_NATIVE
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MVP 4 — Interactive Build-Phase Interjection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInteractiveMode:
+    """Tests for --interactive build-phase previews."""
+
+    def test_crew_init_default_not_interactive(self):
+        mock_client = MagicMock()
+        crew = EPTCrew("test feature", client=mock_client, auto_approve=True)
+        assert crew.interactive is False
+
+    def test_crew_init_interactive(self):
+        mock_client = MagicMock()
+        crew = EPTCrew("test feature", client=mock_client, interactive=True)
+        assert crew.interactive is True
+
+    def test_build_preview_approve(self, monkeypatch):
+        """build_preview should return ('approve', '') when user types 'a'."""
+        from hive.ui import TerminalUI
+        bb = Blackboard(feature="test")
+        ui = TerminalUI(bb)
+        monkeypatch.setattr("builtins.input", lambda: "a")
+        action, feedback = ui.build_preview("main.py", "print('hello')", "Dev Alpha")
+        assert action == "approve"
+        assert feedback == ""
+
+    def test_build_preview_skip(self, monkeypatch):
+        from hive.ui import TerminalUI
+        bb = Blackboard(feature="test")
+        ui = TerminalUI(bb)
+        monkeypatch.setattr("builtins.input", lambda: "s")
+        action, feedback = ui.build_preview("main.py", "print('hello')", "Dev Alpha")
+        assert action == "skip"
+
+    def test_build_preview_feedback(self, monkeypatch):
+        from hive.ui import TerminalUI
+        bb = Blackboard(feature="test")
+        ui = TerminalUI(bb)
+        inputs = iter(["f", "add error handling"])
+        monkeypatch.setattr("builtins.input", lambda: next(inputs))
+        action, feedback = ui.build_preview("main.py", "print('hello')", "Dev Alpha")
+        assert action == "feedback"
+        assert feedback == "add error handling"
+
+    def test_build_preview_inline_feedback(self, monkeypatch):
+        """Any unrecognized input should be treated as feedback."""
+        from hive.ui import TerminalUI
+        bb = Blackboard(feature="test")
+        ui = TerminalUI(bb)
+        monkeypatch.setattr("builtins.input", lambda: "add more docstrings")
+        action, feedback = ui.build_preview("main.py", "print('hello')", "Dev Alpha")
+        assert action == "feedback"
+        assert feedback == "add more docstrings"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MVP 5 — Live Dashboard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestDashboard:
+    """Tests for the SSE-based live dashboard."""
+
+    def test_import_dashboard(self):
+        from hive.dashboard import DashboardServer, _DashboardHandler
+        assert DashboardServer is not None
+        assert _DashboardHandler is not None
+
+    def test_dashboard_snapshot(self):
+        from hive.dashboard import DashboardServer
+        bb = Blackboard(feature="test dashboard")
+        bb.current_phase = "build"
+        bb.registry["app.py"] = FileEntry(name="app.py", approved=True, assigned_dev="Dev Alpha")
+        bb.registry["test.py"] = FileEntry(name="test.py", approved=False)
+        ds = DashboardServer(bb, cost_tracker=None, port=0)
+        snap = ds.snapshot()
+        assert snap["feature"] == "test dashboard"
+        assert snap["current_phase"] == "build"
+        assert snap["files_total"] == 2
+        assert snap["files_approved"] == 1
+        assert "app.py" in snap["files"]
+        assert snap["files"]["app.py"]["approved"] is True
+        assert snap["files"]["test.py"]["approved"] is False
+
+    def test_dashboard_snapshot_with_cost_tracker(self):
+        from hive.dashboard import DashboardServer
+        from hive.telemetry import CostTracker
+        bb = Blackboard(feature="cost test")
+        tracker = CostTracker()
+        tracker.total_cost = 0.05
+        ds = DashboardServer(bb, cost_tracker=tracker, port=0)
+        snap = ds.snapshot()
+        assert snap["total_cost"] == 0.05
+
+    def test_dashboard_start_stop(self):
+        from hive.dashboard import DashboardServer
+        bb = Blackboard(feature="start-stop test")
+        # Use port 0 to get an auto-assigned port (avoids conflicts)
+        ds = DashboardServer(bb, port=0)
+        ds.start()
+        assert ds._thread is not None
+        assert ds._thread.is_alive()
+        ds.stop()
+        # Give it a moment to shut down
+        import time
+        time.sleep(0.5)
+
+    def test_dashboard_html_contains_key_elements(self):
+        from hive.dashboard import _DASHBOARD_HTML
+        assert "Hive" in _DASHBOARD_HTML
+        assert "EventSource" in _DASHBOARD_HTML
+        assert "/events" in _DASHBOARD_HTML
+        assert "/status" in _DASHBOARD_HTML
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MVP 6 — Brownfield Basics
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBrownfieldCodebaseIndex:
+    """Tests for the codebase_index() brownfield analysis."""
+
+    def test_codebase_index_empty_dir(self, tmp_path):
+        from hive.connectors import codebase_index
+        result = codebase_index(tmp_path)
+        assert "Existing Codebase Structure" in result
+
+    def test_codebase_index_python_signatures(self, tmp_path):
+        from hive.connectors import codebase_index
+        py_file = tmp_path / "app.py"
+        py_file.write_text(
+            "import os\n\n"
+            "class AppService:\n"
+            "    def start(self, port: int) -> None:\n"
+            "        pass\n\n"
+            "def main():\n"
+            "    svc = AppService()\n"
+            "    svc.start(8080)\n"
+        )
+        result = codebase_index(tmp_path)
+        assert "app.py" in result
+        assert "class AppService" in result
+        assert "def start" in result
+        assert "def main" in result
+
+    def test_codebase_index_js_signatures(self, tmp_path):
+        from hive.connectors import codebase_index
+        js_file = tmp_path / "index.js"
+        js_file.write_text(
+            "export function handleRequest(req, res) {\n"
+            "  res.json({ ok: true });\n"
+            "}\n\n"
+            "export class Router {\n"
+            "  constructor() {}\n"
+            "}\n"
+        )
+        result = codebase_index(tmp_path)
+        assert "index.js" in result
+        assert "export function handleRequest" in result
+        assert "export class Router" in result
+
+    def test_codebase_index_skips_binary(self, tmp_path):
+        from hive.connectors import codebase_index
+        (tmp_path / "app.py").write_text("def hello(): pass\n")
+        (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        result = codebase_index(tmp_path)
+        assert "app.py" in result
+        assert "image.png" not in result
+
+    def test_codebase_index_max_files(self, tmp_path):
+        from hive.connectors import codebase_index
+        for i in range(10):
+            (tmp_path / f"mod{i}.py").write_text(f"def func{i}(): pass\n")
+        result = codebase_index(tmp_path, max_files=3)
+        # Should only index 3 files
+        indexed = result.count("### mod")
+        assert indexed <= 3
+
+    def test_python_signatures_extraction(self):
+        from hive.connectors import _python_signatures
+        source = (
+            "from typing import Optional\n\n"
+            "class Foo(Base):\n"
+            "    def method(self, x: int) -> str:\n"
+            "        return str(x)\n\n"
+            "async def handler(request):\n"
+            "    return 200\n"
+        )
+        sigs = _python_signatures(source, "test.py")
+        assert any("class Foo" in s for s in sigs)
+        assert any("def method" in s for s in sigs)
+        assert any("async def handler" in s for s in sigs)
+        assert any("from typing" in s for s in sigs)
+
+    def test_python_signatures_syntax_error(self):
+        from hive.connectors import _python_signatures
+        sigs = _python_signatures("def broken(:\n  pass\n", "bad.py")
+        assert sigs == []
+
+    def test_generic_signatures_js(self):
+        from hive.connectors import _generic_signatures
+        source = (
+            "export function foo(bar) {\n"
+            "  return bar;\n"
+            "}\n"
+            "export class MyClass {\n"
+            "}\n"
+        )
+        sigs = _generic_signatures(source)
+        assert any("export function foo" in s for s in sigs)
+        assert any("export class MyClass" in s for s in sigs)
+
+
+class TestBrownfieldModifyMode:
+    """Tests for --modify mode in EPTCrew."""
+
+    def test_crew_init_no_modify(self):
+        mock_client = MagicMock()
+        crew = EPTCrew("test", client=mock_client)
+        assert crew.modify_path is None
+
+    def test_crew_init_with_modify(self):
+        mock_client = MagicMock()
+        crew = EPTCrew("test", client=mock_client, modify_path="/tmp/myproject")
+        assert crew.modify_path == "/tmp/myproject"

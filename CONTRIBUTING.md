@@ -20,15 +20,16 @@ make test
 
 ```
 hive/
-├── hive/                  # Core package (12 modules + plugins subpackage)
+├── hive/                  # Core package (13 modules + plugins subpackage)
 │   ├── __init__.py       #   Package exports + version
-│   ├── llm_client.py     #   Pluggable LLM connector
+│   ├── llm_client.py     #   Pluggable LLM connector (multi-provider)
 │   ├── agents.py         #   Agent definitions + personalities
-│   ├── state.py          #   Blackboard, events, checkpoints
+│   ├── state.py          #   Blackboard, events, checkpoints, approved_signatures()
 │   ├── crew.py           #   13-phase orchestrator
+│   ├── dashboard.py      #   SSE-based web dashboard (DashboardServer)
 │   ├── prompts.py        #   All LLM prompt templates
-│   ├── ui.py             #   Terminal UI (ANSI)
-│   ├── connectors.py     #   External knowledge ingestion
+│   ├── ui.py             #   Terminal UI (ANSI) + build_preview()
+│   ├── connectors.py     #   External knowledge ingestion + brownfield codebase_index
 │   ├── memory.py         #   3-tier learning memory
 │   ├── hardening.py      #   Production utilities
 │   ├── sandbox.py        #   Code execution loop (syntax, import, test, multi-file test execution)
@@ -37,8 +38,8 @@ hive/
 │       ├── base.py       #     5 plugin protocols
 │       ├── registry.py   #     Plugin discovery, loading, lifecycle
 │       └── examples/     #     Example plugins (SAP, guidelines, GitHub, lifecycle)
-├── tests/                # Test suite (~677 tests)
-│   ├── test_hive.py       #   Core functionality tests (~497)
+├── tests/                # Test suite (~715 tests)
+│   ├── test_hive.py       #   Core functionality tests (~536)
 │   ├── test_hardening.py #   Hardening & safety tests (~88)
 │   └── test_plugins.py   #   Plugin system tests (~92)
 ├── run_hive.py            # CLI entry point

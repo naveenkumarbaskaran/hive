@@ -22,6 +22,7 @@ from hive.state import Blackboard, Event, EventType, UserProfile
 #  NO_COLOR / dumb terminal detection
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _use_color() -> bool:
     """Return True if ANSI color output should be used."""
     if "NO_COLOR" in os.environ:
@@ -40,31 +41,33 @@ USE_COLOR = _use_color()
 #  ANSI color helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class C:
     """ANSI color codes."""
-    RESET   = "\033[0m"
-    BOLD    = "\033[1m"
-    DIM     = "\033[2m"
-    ITALIC  = "\033[3m"
-    UNDER   = "\033[4m"
 
-    BLACK   = "\033[30m"
-    RED     = "\033[31m"
-    GREEN   = "\033[32m"
-    YELLOW  = "\033[33m"
-    BLUE    = "\033[34m"
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    ITALIC = "\033[3m"
+    UNDER = "\033[4m"
+
+    BLACK = "\033[30m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
     MAGENTA = "\033[35m"
-    CYAN    = "\033[36m"
-    WHITE   = "\033[37m"
+    CYAN = "\033[36m"
+    WHITE = "\033[37m"
 
-    BG_BLACK   = "\033[40m"
-    BG_RED     = "\033[41m"
-    BG_GREEN   = "\033[42m"
-    BG_YELLOW  = "\033[43m"
-    BG_BLUE    = "\033[44m"
+    BG_BLACK = "\033[40m"
+    BG_RED = "\033[41m"
+    BG_GREEN = "\033[42m"
+    BG_YELLOW = "\033[43m"
+    BG_BLUE = "\033[44m"
     BG_MAGENTA = "\033[45m"
-    BG_CYAN    = "\033[46m"
-    BG_WHITE   = "\033[47m"
+    BG_CYAN = "\033[46m"
+    BG_WHITE = "\033[47m"
 
     # 256-color
     @staticmethod
@@ -87,17 +90,18 @@ def colored(text: str, *codes: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 AGENT_COLORS: dict[str, str] = {
-    "scout":  C.CYAN,
-    "penny":  C.YELLOW,
+    "scout": C.CYAN,
+    "penny": C.YELLOW,
     "archie": C.BLUE,
-    "quinn":  C.GREEN,
-    "judge":  C.MAGENTA,
-    "pixel":  C.fg(208),   # orange
-    "flow":   C.fg(141),   # lavender
-    "alex":   C.fg(219),   # pink
-    "user":   C.WHITE,
+    "quinn": C.GREEN,
+    "judge": C.MAGENTA,
+    "pixel": C.fg(208),  # orange
+    "flow": C.fg(141),  # lavender
+    "alex": C.fg(219),  # pink
+    "user": C.WHITE,
     "system": C.DIM,
 }
+
 
 def agent_color(agent_id: str) -> str:
     """Get color for an agent. Dev agents get a cycling color."""
@@ -116,10 +120,18 @@ def agent_color(agent_id: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 AGENT_EMOJI: dict[str, str] = {
-    "scout": "🔍", "penny": "📋", "archie": "🏗️", "quinn": "🧪",
-    "judge": "⚖️", "pixel": "🎨", "flow": "🧭", "alex": "👤",
-    "user": "👨‍💻", "system": "⚙️",
+    "scout": "🔍",
+    "penny": "📋",
+    "archie": "🏗️",
+    "quinn": "🧪",
+    "judge": "⚖️",
+    "pixel": "🎨",
+    "flow": "🧭",
+    "alex": "👤",
+    "user": "👨‍💻",
+    "system": "⚙️",
 }
+
 
 def agent_emoji(agent_id: str) -> str:
     if agent_id.startswith("dev_"):
@@ -130,6 +142,7 @@ def agent_emoji(agent_id: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Terminal width
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def term_width() -> int:
     try:
@@ -142,15 +155,16 @@ def term_width() -> int:
 #  UI Renderer
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TerminalUI:
     """Renders EPT events to the terminal with flair."""
 
     def __init__(self, board: Blackboard, verbose: bool = False):
         self.board = board
         self.verbose = verbose
-        self._rendered_count = 0                     # track what we've shown
+        self._rendered_count = 0  # track what we've shown
         self._phase_start_time: float | None = None
-        self._thinking_shown: set[str] = set()       # avoid flooding thinking msgs
+        self._thinking_shown: set[str] = set()  # avoid flooding thinking msgs
 
     # ─────────────────────────────────────────────────────────────────────────
     #  High-level prints
@@ -165,7 +179,12 @@ class TerminalUI:
         print()
         print(" " * pad + colored("╔" + "═" * (box_w - 2) + "╗", C.CYAN, C.BOLD))
         inner = title.center(box_w - 2)
-        print(" " * pad + colored("║", C.CYAN, C.BOLD) + colored(inner, C.WHITE, C.BOLD) + colored("║", C.CYAN, C.BOLD))
+        print(
+            " " * pad
+            + colored("║", C.CYAN, C.BOLD)
+            + colored(inner, C.WHITE, C.BOLD)
+            + colored("║", C.CYAN, C.BOLD)
+        )
         print(" " * pad + colored("╚" + "═" * (box_w - 2) + "╝", C.CYAN, C.BOLD))
         print()
 
@@ -178,9 +197,8 @@ class TerminalUI:
                 continue
             color = agent_color(aid)
             status = colored("ACTIVE", C.GREEN, C.BOLD)
-            print(f"    {colored(a.emoji + ' ' + a.name, color, C.BOLD):30}  "
-                  f"{a.role:22}  {status}")
-            print(f"    {colored('  ' + '\"' + a.tagline + '\"', C.DIM, C.ITALIC)}")
+            print(f"    {colored(a.emoji + ' ' + a.name, color, C.BOLD):30}  {a.role:22}  {status}")
+            print(f"    {colored('  ' + '"' + a.tagline + '"', C.DIM, C.ITALIC)}")
         print()
 
     def welcome_intake(self) -> UserProfile:
@@ -213,7 +231,11 @@ class TerminalUI:
 
         # Role
         print()
-        print(colored("  What's your role? (e.g., Product Owner, Developer, Founder)", C.WHITE, C.BOLD))
+        print(
+            colored(
+                "  What's your role? (e.g., Product Owner, Developer, Founder)", C.WHITE, C.BOLD
+            )
+        )
         print(colored("    > ", C.DIM), end="")
         try:
             role = input().strip()
@@ -231,7 +253,11 @@ class TerminalUI:
 
         # Is this for yourself or someone else?
         print()
-        print(colored("  Is this feature request for yourself, or for another user/team?", C.WHITE, C.BOLD))
+        print(
+            colored(
+                "  Is this feature request for yourself, or for another user/team?", C.WHITE, C.BOLD
+            )
+        )
         print(colored("    [1] For myself", C.DIM))
         print(colored("    [2] For someone else / another team", C.DIM))
         print(colored("    > ", C.DIM), end="")
@@ -255,7 +281,13 @@ class TerminalUI:
                 end_user_name = ""
 
             print()
-            print(colored("  What is the end user's role? (e.g., Customer Service Agent, Admin)", C.WHITE, C.BOLD))
+            print(
+                colored(
+                    "  What is the end user's role? (e.g., Customer Service Agent, Admin)",
+                    C.WHITE,
+                    C.BOLD,
+                )
+            )
             print(colored("    > ", C.DIM), end="")
             try:
                 end_user_role = input().strip()
@@ -273,7 +305,11 @@ class TerminalUI:
         # As-is process
         print()
         print(colored("  How do you (or the end user) currently handle this?", C.WHITE, C.BOLD))
-        print(colored("  Describe the as-is process, if any. (Type END on a new line when done)", C.DIM))
+        print(
+            colored(
+                "  Describe the as-is process, if any. (Type END on a new line when done)", C.DIM
+            )
+        )
         as_is_lines = []
         while True:
             try:
@@ -314,7 +350,12 @@ class TerminalUI:
             print(colored(f"  ✓ Got it, {requester}. You'll be the end user.", C.GREEN))
         else:
             eu = end_user_name or "the end user"
-            print(colored(f"  ✓ Got it, {requester}. Building for {eu} ({end_user_role or 'role TBD'}).", C.GREEN))
+            print(
+                colored(
+                    f"  ✓ Got it, {requester}. Building for {eu} ({end_user_role or 'role TBD'}).",
+                    C.GREEN,
+                )
+            )
         if as_is_process:
             print(colored("  ✓ As-is process captured.", C.GREEN))
         print(colored(f"  {border}", C.CYAN))
@@ -376,9 +417,13 @@ class TerminalUI:
 
         # Group by source type
         type_icons = {
-            "document":  "📄", "codebase":  "💻", "test_case": "🧪",
-            "data_file": "📊", "api_spec":  "🔌", "schema":    "🗃️",
-            "git_repo":  "📦",
+            "document": "📄",
+            "codebase": "💻",
+            "test_case": "🧪",
+            "data_file": "📊",
+            "api_spec": "🔌",
+            "schema": "🗃️",
+            "git_repo": "📦",
         }
         for item in items:
             icon = type_icons.get(item.source_type, "📦")
@@ -395,11 +440,14 @@ class TerminalUI:
         total_size = sum(i.raw_size for i in items)
         large_count = sum(1 for i in items if i.was_summarized)
         print()
-        print(colored(
-            f"  ✅ {len(items)} item(s) loaded ({format_size(total_size)} total)"
-            + (f" — {large_count} to be summarized by Scout" if large_count else ""),
-            C.GREEN, C.BOLD,
-        ))
+        print(
+            colored(
+                f"  ✅ {len(items)} item(s) loaded ({format_size(total_size)} total)"
+                + (f" — {large_count} to be summarized by Scout" if large_count else ""),
+                C.GREEN,
+                C.BOLD,
+            )
+        )
         print(colored(f"  {line}", C.DIM))
         print()
 
@@ -440,14 +488,22 @@ class TerminalUI:
         print(colored(f"  ✓ {phase} complete{elapsed}", C.GREEN, C.BOLD))
 
     def signoff_prompt(
-        self, artifact: str, content_preview: str,
-        produced_by: str = "", reviewed_by: list[str] | None = None,
+        self,
+        artifact: str,
+        content_preview: str,
+        produced_by: str = "",
+        reviewed_by: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Ask the user for sign-off on an artifact. Returns (approved, feedback)."""
         w = term_width()
         print()
         print(colored("  ┌" + "─" * (w - 6) + "┐", C.YELLOW))
-        print(colored("  │", C.YELLOW) + colored(f"  SIGN-OFF REQUIRED: {artifact.upper()}", C.BOLD, C.YELLOW) + " " * max(0, w - 30 - len(artifact)) + colored("│", C.YELLOW))
+        print(
+            colored("  │", C.YELLOW)
+            + colored(f"  SIGN-OFF REQUIRED: {artifact.upper()}", C.BOLD, C.YELLOW)
+            + " " * max(0, w - 30 - len(artifact))
+            + colored("│", C.YELLOW)
+        )
         print(colored("  └" + "─" * (w - 6) + "┘", C.YELLOW))
 
         # Attribution
@@ -470,7 +526,12 @@ class TerminalUI:
         print()
 
         while True:
-            print(colored("  👨‍💻 ", C.WHITE) + colored("Approve? ", C.BOLD) + colored("[y]es / [n]o + feedback: ", C.DIM), end="")
+            print(
+                colored("  👨‍💻 ", C.WHITE)
+                + colored("Approve? ", C.BOLD)
+                + colored("[y]es / [n]o + feedback: ", C.DIM),
+                end="",
+            )
             try:
                 resp = input().strip()
             except (EOFError, KeyboardInterrupt):
@@ -479,7 +540,7 @@ class TerminalUI:
             if resp.lower() in ("y", "yes", ""):
                 return True, ""
             elif resp.lower().startswith(("n", "no")):
-                feedback = resp[resp.find(" ") + 1:] if " " in resp else ""
+                feedback = resp[resp.find(" ") + 1 :] if " " in resp else ""
                 if not feedback:
                     print(colored("    Feedback (what should change): ", C.DIM), end="")
                     try:
@@ -499,10 +560,12 @@ class TerminalUI:
         w = term_width()
         print()
         print(colored("  ┌" + "─" * (w - 6) + "┐", C.RED))
-        print(colored("  │", C.RED)
-              + colored("  ⚠️  INTEGRATION GATE — Quinn found issues", C.BOLD, C.RED)
-              + " " * max(0, w - 52)
-              + colored("│", C.RED))
+        print(
+            colored("  │", C.RED)
+            + colored("  ⚠️  INTEGRATION GATE — Quinn found issues", C.BOLD, C.RED)
+            + " " * max(0, w - 52)
+            + colored("│", C.RED)
+        )
         print(colored("  └" + "─" * (w - 6) + "┘", C.RED))
         print()
 
@@ -513,23 +576,24 @@ class TerminalUI:
             for wl in wrapped.splitlines():
                 print(colored("    │ ", C.DIM) + wl)
         if len(quinn_notes.splitlines()) > 30:
-            print(colored(
-                f"    │ ... ({len(quinn_notes.splitlines())} total lines)", C.DIM
-            ))
+            print(colored(f"    │ ... ({len(quinn_notes.splitlines())} total lines)", C.DIM))
         print()
-        print(colored(
-            "  Integration FAIL normally blocks release.", C.YELLOW, C.BOLD
-        ))
-        print(colored(
-            "  You can override to proceed, or halt and fix issues first.",
-            C.DIM,
-        ))
+        print(colored("  Integration FAIL normally blocks release.", C.YELLOW, C.BOLD))
+        print(
+            colored(
+                "  You can override to proceed, or halt and fix issues first.",
+                C.DIM,
+            )
+        )
         print()
 
         while True:
-            print(colored("  👨‍💻 ", C.WHITE)
-                  + colored("Override and proceed to release? ", C.BOLD)
-                  + colored("[y]es / [n]o (halt): ", C.DIM), end="")
+            print(
+                colored("  👨‍💻 ", C.WHITE)
+                + colored("Override and proceed to release? ", C.BOLD)
+                + colored("[y]es / [n]o (halt): ", C.DIM),
+                end="",
+            )
             try:
                 resp = input().strip().lower()
             except (EOFError, KeyboardInterrupt):
@@ -539,8 +603,72 @@ class TerminalUI:
             elif resp in ("n", "no", ""):
                 return False
 
+    def build_preview(
+        self,
+        filename: str,
+        code: str,
+        dev_name: str,
+    ) -> tuple[str, str]:
+        """Show generated code and ask user to approve, give feedback, or skip.
+
+        Returns (action, feedback) where action is one of:
+          - ``"approve"`` — proceed to review
+          - ``"feedback"`` — re-generate with feedback text
+          - ``"skip"`` — skip this file entirely
+        """
+        w = term_width()
+        print()
+        print(colored("  ┌" + "─" * (w - 6) + "┐", C.CYAN))
+        print(
+            colored("  │", C.CYAN)
+            + colored(f"  🔍  BUILD PREVIEW: {filename}", C.BOLD, C.CYAN)
+            + " " * max(0, w - 28 - len(filename))
+            + colored("│", C.CYAN)
+        )
+        print(colored("  └" + "─" * (w - 6) + "┘", C.CYAN))
+        print(colored(f"    Built by: {dev_name}", C.DIM))
+        print()
+
+        # Show code preview (first 40 lines + truncation)
+        lines = code.splitlines()
+        show = min(40, len(lines))
+        for i, line in enumerate(lines[:show], 1):
+            num = f"{i:4d}"
+            print(colored(f"    {num} │ ", C.DIM) + line)
+        if len(lines) > show:
+            print(colored(f"         ... ({len(lines)} total lines)", C.DIM))
+        print()
+
+        while True:
+            print(
+                colored("  👨‍💻 ", C.WHITE) + colored("[a]pprove / [f]eedback / [s]kip: ", C.BOLD),
+                end="",
+            )
+            try:
+                resp = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return "approve", ""
+
+            if resp in ("a", "approve", "y", "yes", ""):
+                return "approve", ""
+            elif resp.startswith(("f", "feedback")):
+                print(colored("    Your feedback: ", C.DIM), end="")
+                try:
+                    feedback = input().strip()
+                except (EOFError, KeyboardInterrupt):
+                    feedback = ""
+                return "feedback", feedback
+            elif resp in ("s", "skip"):
+                return "skip", ""
+            else:
+                # Treat as inline feedback
+                return "feedback", resp
+
     def revision_diff(
-        self, artifact: str, old_content: str, new_content: str,
+        self,
+        artifact: str,
+        old_content: str,
+        new_content: str,
         version: int,
     ) -> None:
         """Show a human-readable diff summary between document versions.
@@ -550,19 +678,24 @@ class TerminalUI:
         """
         w = term_width()
         print()
-        print(colored(
-            f"  📝 REVISION DIFF: {artifact.upper()} v{version - 1} → v{version}",
-            C.CYAN, C.BOLD,
-        ))
+        print(
+            colored(
+                f"  📝 REVISION DIFF: {artifact.upper()} v{version - 1} → v{version}",
+                C.CYAN,
+                C.BOLD,
+            )
+        )
 
         old_lines = old_content.splitlines()
         new_lines = new_content.splitlines()
-        print(colored(
-            f"    Lines: {len(old_lines)} → {len(new_lines)} "
-            f"({'+' if len(new_lines) >= len(old_lines) else ''}"
-            f"{len(new_lines) - len(old_lines)})",
-            C.DIM,
-        ))
+        print(
+            colored(
+                f"    Lines: {len(old_lines)} → {len(new_lines)} "
+                f"({'+' if len(new_lines) >= len(old_lines) else ''}"
+                f"{len(new_lines) - len(old_lines)})",
+                C.DIM,
+            )
+        )
 
         # Compute section-level changes (## headings)
         old_sections = {ln.strip() for ln in old_lines if ln.strip().startswith("##")}
@@ -584,16 +717,29 @@ class TerminalUI:
         new_unique = [ln for ln in new_lines if ln not in old_set and ln.strip()]
         # Filter to interesting lines (requirements, endpoints, key decisions)
         interesting = [
-            ln for ln in new_unique
-            if any(kw in ln.upper() for kw in [
-                "FR-", "NFR-", "MUST", "SHALL", "API", "ENDPOINT",
-                "MODULE", "SEARCH", "STORAGE", "DELETE", "CREATE",
-            ])
+            ln
+            for ln in new_unique
+            if any(
+                kw in ln.upper()
+                for kw in [
+                    "FR-",
+                    "NFR-",
+                    "MUST",
+                    "SHALL",
+                    "API",
+                    "ENDPOINT",
+                    "MODULE",
+                    "SEARCH",
+                    "STORAGE",
+                    "DELETE",
+                    "CREATE",
+                ]
+            )
         ][:10]
         if interesting:
             print(colored("    + Key additions:", C.GREEN))
             for line in interesting:
-                truncated = line.strip()[:w - 12]
+                truncated = line.strip()[: w - 12]
                 print(colored(f"      {truncated}", C.GREEN, C.DIM))
         print()
 
@@ -741,7 +887,10 @@ class TerminalUI:
             print()  # newline when complete
 
     def overall_progress(
-        self, phase_idx: int, total_phases: int, phase_name: str,
+        self,
+        phase_idx: int,
+        total_phases: int,
+        phase_name: str,
     ) -> None:
         """Show overall pipeline progress: 'Phase 5/13 — architecture (38%)'."""
         pct = phase_idx / max(total_phases, 1) * 100
@@ -751,7 +900,7 @@ class TerminalUI:
         bar = "▓" * filled + "░" * (bar_len - filled)
 
         # Cost display if tracker is available
-        tracker = getattr(self.board, '_cost_tracker', None)
+        tracker = getattr(self.board, "_cost_tracker", None)
         cost_str = ""
         if tracker and tracker.total_cost > 0:
             cost_str = f"  💰 ${tracker.total_cost:.4f}"
@@ -760,32 +909,41 @@ class TerminalUI:
                 cost_str += f" ({budget_pct:.0f}% of budget)"
 
         line = (
-            f"  [{bar}] Phase {phase_idx + 1}/{total_phases}"
-            f" — {phase_name} ({pct:.0f}%){cost_str}"
+            f"  [{bar}] Phase {phase_idx + 1}/{total_phases} — {phase_name} ({pct:.0f}%){cost_str}"
         )
         print(colored(line, C.CYAN))
 
     def file_status(self, filename: str, status: str, detail: str = "") -> None:
         """Show file-level status during build."""
         status_colors = {
-            "building":    C.YELLOW,
-            "reviewing":   C.CYAN,
-            "approved":    C.GREEN,
-            "failed":      C.RED,
-            "skipped":     C.DIM,
-            "revising":    C.MAGENTA,
+            "building": C.YELLOW,
+            "reviewing": C.CYAN,
+            "approved": C.GREEN,
+            "failed": C.RED,
+            "skipped": C.DIM,
+            "revising": C.MAGENTA,
             "rate-limited": C.RED,
-            "retrying":    C.YELLOW,
-            "dropped":     C.RED,
-            "reflecting":  C.BLUE,
-            "sandbox":     C.MAGENTA,
+            "retrying": C.YELLOW,
+            "dropped": C.RED,
+            "reflecting": C.BLUE,
+            "sandbox": C.MAGENTA,
             "sandbox-fix": C.YELLOW,
         }
         color = status_colors.get(status, C.WHITE)
-        icon = {"building": "🔨", "reviewing": "🔎", "approved": "✅",
-                "failed": "❌", "skipped": "⏭️", "revising": "🔄",
-                "rate-limited": "⚠️", "retrying": "🔁", "dropped": "🚨",
-                "reflecting": "🔍", "sandbox": "🧪", "sandbox-fix": "🔧"}.get(status, "•")
+        icon = {
+            "building": "🔨",
+            "reviewing": "🔎",
+            "approved": "✅",
+            "failed": "❌",
+            "skipped": "⏭️",
+            "revising": "🔄",
+            "rate-limited": "⚠️",
+            "retrying": "🔁",
+            "dropped": "🚨",
+            "reflecting": "🔍",
+            "sandbox": "🧪",
+            "sandbox-fix": "🔧",
+        }.get(status, "•")
         line = f"  {icon} {filename:30} {colored(status.upper(), color, C.BOLD)}"
         if detail:
             line += f"  {colored(detail, C.DIM)}"
@@ -808,13 +966,26 @@ class TerminalUI:
 
         # User
         if b.user_profile and b.user_profile.name:
-            print(colored(f"  👤 Requester: {b.user_profile.name}"
-                          + (f" ({b.user_profile.role})" if b.user_profile.role else ""),
-                          C.WHITE, C.BOLD))
+            print(
+                colored(
+                    f"  👤 Requester: {b.user_profile.name}"
+                    + (f" ({b.user_profile.role})" if b.user_profile.role else ""),
+                    C.WHITE,
+                    C.BOLD,
+                )
+            )
             if not b.user_profile.is_request_for_self and b.user_profile.end_user_name:
-                print(colored(f"     End user : {b.user_profile.end_user_name}"
-                              + (f" ({b.user_profile.end_user_role})" if b.user_profile.end_user_role else ""),
-                              C.DIM))
+                print(
+                    colored(
+                        f"     End user : {b.user_profile.end_user_name}"
+                        + (
+                            f" ({b.user_profile.end_user_role})"
+                            if b.user_profile.end_user_role
+                            else ""
+                        ),
+                        C.DIM,
+                    )
+                )
             print()
 
         # Files
@@ -823,8 +994,10 @@ class TerminalUI:
         rate_limited = [e for e in skipped if "rate-limit" in (e.skip_reason or "").lower()]
         other_skipped = [e for e in skipped if e not in rate_limited]
         total = len(b.registry)
-        print(colored(f"  📦 Files: {len(approved)}/{total} approved", C.GREEN, C.BOLD)
-              + (f", {len(skipped)} skipped" if skipped else ""))
+        print(
+            colored(f"  📦 Files: {len(approved)}/{total} approved", C.GREEN, C.BOLD)
+            + (f", {len(skipped)} skipped" if skipped else "")
+        )
 
         for e in approved:
             dev_note = f" (by {e.assigned_dev})" if e.assigned_dev else ""
@@ -834,17 +1007,22 @@ class TerminalUI:
         # Surface rate-limited drops prominently
         if rate_limited:
             print()
-            print(colored(
-                f"  🚨 DROPPED ({len(rate_limited)} file(s) — rate-limit cascade):",
-                C.RED, C.BOLD,
-            ))
+            print(
+                colored(
+                    f"  🚨 DROPPED ({len(rate_limited)} file(s) — rate-limit cascade):",
+                    C.RED,
+                    C.BOLD,
+                )
+            )
             for e in rate_limited:
                 print(colored(f"    ❌ {e.name}: {e.skip_reason}", C.RED))
-            print(colored(
-                "    💡 Recoverable — resume with: "
-                "hive --resume <project>/checkpoints/board_latest.json",
-                C.YELLOW,
-            ))
+            print(
+                colored(
+                    "    💡 Recoverable — resume with: "
+                    "hive --resume <project>/checkpoints/board_latest.json",
+                    C.YELLOW,
+                )
+            )
 
         for e in other_skipped:
             print(colored(f"    ⏭️  {e.name}: {e.skip_reason}", C.DIM))
@@ -852,15 +1030,18 @@ class TerminalUI:
         # Knowledge base
         if b.knowledge_base:
             from hive.connectors import format_size
+
             total_kb_size = sum(i.raw_size for i in b.knowledge_base)
             types = set(i.source_type for i in b.knowledge_base)
             print()
-            print(colored(
-                f"  📎 Knowledge: {len(b.knowledge_base)} items "
-                f"({format_size(total_kb_size)}) — "
-                f"types: {', '.join(sorted(types))}",
-                C.CYAN,
-            ))
+            print(
+                colored(
+                    f"  📎 Knowledge: {len(b.knowledge_base)} items "
+                    f"({format_size(total_kb_size)}) — "
+                    f"types: {', '.join(sorted(types))}",
+                    C.CYAN,
+                )
+            )
 
         # Reference repos
         if b.repo_urls:
@@ -915,23 +1096,28 @@ class TerminalUI:
                 parts.append(colored(f"{low} minor/info", C.DIM))
             summary = ", ".join(parts) if parts else str(len(b.all_deferred))
 
-            print(colored(
-                f"  ⚠️  Deferred issues: {len(b.all_deferred)} ({summary})",
-                C.YELLOW,
-            ))
+            print(
+                colored(
+                    f"  ⚠️  Deferred issues: {len(b.all_deferred)} ({summary})",
+                    C.YELLOW,
+                )
+            )
 
             # Show blockers and warnings fully, minor/info just counts
             for sev in sorted_sevs:
                 items = by_severity[sev]
                 sev_color = {
-                    "blocker": C.RED, "warning": C.YELLOW,
+                    "blocker": C.RED,
+                    "warning": C.YELLOW,
                 }.get(sev, C.DIM)
                 if sev in ("blocker", "warning"):
                     for fname, issue in items[:5]:
-                        print(colored(
-                            f"    [{sev}] {fname}: {issue.description}",
-                            sev_color,
-                        ))
+                        print(
+                            colored(
+                                f"    [{sev}] {fname}: {issue.description}",
+                                sev_color,
+                            )
+                        )
                     if len(items) > 5:
                         print(colored(f"    ... +{len(items) - 5} more {sev}", sev_color))
                 else:
@@ -940,17 +1126,18 @@ class TerminalUI:
                     for fname, _ in items:
                         file_counts[fname] = file_counts.get(fname, 0) + 1
                     files_summary = ", ".join(
-                        f"{f} ({c})" for f, c in sorted(
-                            file_counts.items(), key=lambda x: -x[1]
-                        )[:5]
+                        f"{f} ({c})"
+                        for f, c in sorted(file_counts.items(), key=lambda x: -x[1])[:5]
                     )
                     remaining = len(file_counts) - 5
                     if remaining > 0:
                         files_summary += f", +{remaining} more"
-                    print(colored(
-                        f"    [{sev}] {len(items)} issues across: {files_summary}",
-                        C.DIM,
-                    ))
+                    print(
+                        colored(
+                            f"    [{sev}] {len(items)} issues across: {files_summary}",
+                            C.DIM,
+                        )
+                    )
 
         # Amendments
         if b.amendments:
@@ -972,15 +1159,18 @@ class TerminalUI:
             else:
                 vcolor = C.RED
                 vicon = "❌"
-            print(colored(
-                f"  🧪 Integration: {vicon} {b.integration_verdict}", vcolor, C.BOLD,
-            ))
+            print(
+                colored(
+                    f"  🧪 Integration: {vicon} {b.integration_verdict}",
+                    vcolor,
+                    C.BOLD,
+                )
+            )
             # Show first few lines of integration notes for context
             notes = getattr(b, "integration_notes", "")
             if notes and "FAIL" in verdict_upper:
                 note_lines = [
-                    ln for ln in notes.splitlines()
-                    if ln.strip() and not ln.strip().startswith("#")
+                    ln for ln in notes.splitlines() if ln.strip() and not ln.strip().startswith("#")
                 ][:5]
                 for nl in note_lines:
                     print(colored(f"    {nl.strip()[:80]}", C.DIM))
@@ -1001,16 +1191,19 @@ class TerminalUI:
                     print(colored(f"    → {doc.name} ({size_kb:.1f} KB)", C.DIM))
             # List packaging artifacts in src/
             src_dir = b.src_dir
-            pkg_files = [f for f in sorted(src_dir.iterdir())
-                         if f.suffix in (".toml", ".txt", ".json", ".mod")
-                         or f.name in ("Makefile", "README.md", ".npmrc")]
+            pkg_files = [
+                f
+                for f in sorted(src_dir.iterdir())
+                if f.suffix in (".toml", ".txt", ".json", ".mod")
+                or f.name in ("Makefile", "README.md", ".npmrc")
+            ]
             if pkg_files:
                 print(colored("  📦 Packaging artifacts:", C.GREEN, C.BOLD))
                 for pf in pkg_files:
                     print(colored(f"    → {pf.name}", C.DIM))
 
         # Memory summary (if memory_stats are set by the crew)
-        memory_stats = getattr(b, '_memory_stats', None)
+        memory_stats = getattr(b, "_memory_stats", None)
         if memory_stats:
             print()
             print(colored("  🧠 Memory:", C.MAGENTA, C.BOLD))
@@ -1018,9 +1211,10 @@ class TerminalUI:
             if agent_mems:
                 agents_with = [(a, c) for a, c in agent_mems.items() if c > 0]
                 if agents_with:
-                    print("    Agent memories: " + ", ".join(
-                        f"{a} ({c})" for a, c in sorted(agents_with)
-                    ))
+                    print(
+                        "    Agent memories: "
+                        + ", ".join(f"{a} ({c})" for a, c in sorted(agents_with))
+                    )
             team_count = memory_stats.get("team_entries", 0)
             if team_count:
                 print(f"    Team insights : {team_count}")
@@ -1053,7 +1247,9 @@ class TerminalUI:
             if total_escalations:
                 print(colored(f"    Tier escalated: {total_escalations}x", C.YELLOW))
             if total_model_switches:
-                print(colored(f"    Model switches: {total_model_switches}x (429 rotation)", C.YELLOW))
+                print(
+                    colored(f"    Model switches: {total_model_switches}x (429 rotation)", C.YELLOW)
+                )
             if total_thinking_strips:
                 print(colored(f"    Thinking strip: {total_thinking_strips}x", C.YELLOW))
             if total_failures:
@@ -1065,9 +1261,12 @@ class TerminalUI:
                 if e.success:
                     models_used[e.model_used] = models_used.get(e.model_used, 0) + 1
             if models_used:
-                print("    Models used   : " + ", ".join(
-                    f"{m} ({c}x)" for m, c in sorted(models_used.items(), key=lambda x: -x[1])
-                ))
+                print(
+                    "    Models used   : "
+                    + ", ".join(
+                        f"{m} ({c}x)" for m, c in sorted(models_used.items(), key=lambda x: -x[1])
+                    )
+                )
 
             # Per-agent breakdown
             agent_calls: dict[str, list] = {}
@@ -1090,13 +1289,15 @@ class TerminalUI:
             print(colored(f"\n    Full logbook: {b.docs_dir / 'logbook.json'}", C.DIM))
 
         # ── Cost & Telemetry ──
-        tracker = getattr(b, '_cost_tracker', None)
+        tracker = getattr(b, "_cost_tracker", None)
         if tracker and tracker.total_calls > 0:
             print()
             print(colored("  💰 Cost & Telemetry:", C.GREEN, C.BOLD))
             print(f"    Estimated cost: ${tracker.total_cost:.4f}")
-            print(f"    Run duration  : {tracker.run_duration:.0f}s "
-                  f"({tracker.run_duration / 60:.1f}min)")
+            print(
+                f"    Run duration  : {tracker.run_duration:.0f}s "
+                f"({tracker.run_duration / 60:.1f}min)"
+            )
             if tracker.total_calls > 0:
                 avg_cost = tracker.total_cost / tracker.total_calls
                 print(f"    Avg cost/call : ${avg_cost:.5f}")
@@ -1106,11 +1307,13 @@ class TerminalUI:
             if remaining is not None:
                 pct = tracker.budget_pct() or 0
                 color = C.GREEN if pct < 70 else (C.YELLOW if pct < 90 else C.RED)
-                print(colored(
-                    f"    Budget        : ${tracker.total_cost:.4f} / "
-                    f"${tracker.budget_usd:.2f} ({pct:.0f}%)",
-                    color,
-                ))
+                print(
+                    colored(
+                        f"    Budget        : ${tracker.total_cost:.4f} / "
+                        f"${tracker.budget_usd:.2f} ({pct:.0f}%)",
+                        color,
+                    )
+                )
 
             # Per-phase cost breakdown
             phase_data = tracker.phase_summary()

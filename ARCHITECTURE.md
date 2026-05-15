@@ -97,19 +97,20 @@ and structured prompts.
 |------|-------|---------|
 | `hive/crew.py` | ~2572 | 13-phase orchestrator: parallel build, sandbox loop, self-reflection, cost tracking, contract amendment rebuild, PII scanning, regression test generation, project DNA extraction |
 | `hive/prompts.py` | ~1342 | System prompts + task templates for all agent roles including OWASP checklists, SOLID/PII checks, self-reflection, regression tests, project DNA |
-| `hive/ui.py` | ~1130 | ANSI terminal rendering, sign-off prompts, progress dashboard with live cost, delivery summary |
-| `hive/state.py` | ~740 | Blackboard, UserProfile, LogEntry, Events, adaptive context header, checkpoint save/load |
-| `hive/llm_client.py` | ~635 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + 429 model-pool rotation. Streaming support (on_token callback). |
-| `hive/connectors.py` | ~580 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest, URL fetch |
+| `hive/ui.py` | ~1130 | ANSI terminal rendering, sign-off prompts, progress dashboard with live cost, delivery summary, `build_preview()` for interactive mode |
+| `hive/state.py` | ~740 | Blackboard, UserProfile, LogEntry, Events, adaptive context header, checkpoint save/load, `approved_signatures()` for context compression |
+| `hive/llm_client.py` | ~635 | Pluggable LLM connector. Auto-detects backend. Tier→model. Resilient retry + 429 model-pool rotation. Streaming support (on_token callback). Multi-provider per-tier routing via `resolve_endpoint(tier)`. |
+| `hive/connectors.py` | ~580 | Connector system: ConnectorType, KnowledgeItem, ConnectorRegistry, agent routing, git repo clone & ingest, URL fetch, brownfield `codebase_index()` |
 | `hive/hardening.py` | ~478 | atomic_write, file_lock, sanitize, budget, disk checks |
 | `hive/memory.py` | ~456 | Memory system: MemoryEntry, AgentMemory, TeamMemory, GlobalMemory, MemoryManager (3-tier learning) |
 | `hive/sandbox.py` | ~600 | Code execution loop: Sandbox, syntax check, import check, test runner, PII scanner, coverage runner, safe subprocess, context-aware imports, multi-file test execution (`run_test_in_context`, `run_all_tests_in_context`) |
 | `hive/agents.py` | ~338 | Agent dataclass with logbook+memory-wired think(), AgentRoster (10 named agents), DEV_POOL, REVIEWER_POOL |
 | `hive/telemetry.py` | ~317 | **NEW** CostTracker, BudgetExceeded, estimate_cost, model_context_window, per-phase PhaseMetrics |
+| `hive/dashboard.py` | ~350 | **NEW** SSE-based web dashboard: DashboardServer, real-time phase progress, file status, cost tracking, event log |
 | `hive/plugins/` | ~660 | **NEW** Optional plugin system: protocols (base.py), discovery+registry (registry.py), 4 example plugins |
 | `hive/__init__.py` | ~44 | Package exports |
-| `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo, --plugin |
-| `tests/test_hive.py` | ~4796 | ~497 unit tests (no API calls) |
+| `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --interactive, --dashboard, --modify, --attach, --repo, --plugin |
+| `tests/test_hive.py` | ~4796 | ~536 unit tests (no API calls) |
 | `tests/test_hardening.py` | ~669 | ~88 hardening + integration tests |
 | `tests/test_plugins.py` | ~760 | ~92 plugin system tests |
 
@@ -467,6 +468,98 @@ Plugin Discovery (3 sources):
 no-ops guarded by `if self.plugin_registry`. The core pipeline remains
 completely unchanged.
 
+### 6m. Context Compression
+`Blackboard.approved_signatures()` in `hive/state.py` extracts only the
+structural signatures (function defs, class defs, imports, top-level assignments)
+from all approved files — reducing context size by 70-80% compared to full code.
+
+Used in:
+- **Self-reflection** prompts: dev sees compressed sibling context
+- **Test-fix** prompts: dev gets focused signatures instead of bloated full code
+- **Integration-fix** prompts: targeted context for fixing cross-module failures
+
+This allows feeding more approved-file context without exceeding model windows.
+
+### 6n. Multi-Provider LLM Routing
+`hive/llm_client.py` supports per-tier provider routing — each capability tier
+(FAST, BALANCED, POWERFUL) can point to a different LLM backend:
+
+```
+resolve_endpoint(tier) → (base_url, api_key, format_hint)
+
+FAST     → LLM_BASE_URL_FAST     / LLM_API_KEY_FAST     / LLM_FORMAT_FAST
+BALANCED → LLM_BASE_URL_BALANCED / LLM_API_KEY_BALANCED / LLM_FORMAT_BALANCED
+POWERFUL → LLM_BASE_URL_POWERFUL / LLM_API_KEY_POWERFUL / LLM_FORMAT_POWERFUL
+```
+
+Falls back to the default `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_FORMAT` if tier-
+specific vars are not set. Thread-safe via thread-local storage — critical for
+the parallel dep-layer build where multiple threads call different tiers.
+
+Per-URL format detection is cached so auto-detection only happens once per
+unique base URL.
+
+### 6o. Interactive Build Mode
+`--interactive` CLI flag (or `EPTCrew(interactive=True)`) enables user-in-the-loop
+file review during the build phase:
+
+```
+Dev generates code → sandbox passes → self-reflection
+      ↓
+build_preview(): display code in terminal
+      ↓
+User: [a]pprove / [f]eedback / [s]kip
+      ↓ feedback?
+User's feedback sent back to dev agent → re-generation
+      ↓ approve?
+Proceeds to Quinn review (normal flow)
+```
+
+`build_preview()` in `hive/ui.py` renders syntax-highlighted code with a 3-option
+prompt. Feedback strings are injected as additional constraints for the dev.
+
+### 6p. Live Web Dashboard
+`hive/dashboard.py` provides an SSE-based web dashboard (stdlib only, no deps):
+
+```
+--dashboard [PORT]  (default: 8765)
+      ↓
+DashboardServer.start()
+  ├── HTTP GET /          → Auto-refreshing HTML page (EventSource/SSE)
+  ├── HTTP GET /events    → SSE stream (phase progress, file status, cost, events)
+  └── DashboardServer.stop() on pipeline exit
+```
+
+The dashboard shows:
+- Current phase progress (with elapsed time)
+- File build status (pending / building / approved / failed)
+- Running cost breakdown
+- Event log (LLM calls, verdicts, sign-offs)
+
+No new dependencies — uses `http.server` and manual SSE framing.
+
+### 6q. Brownfield Mode — Existing Codebase Modification
+`--modify PATH` (or `EPTCrew(modify_path=PATH)`) enables modification of an
+existing codebase rather than generating greenfield code:
+
+```
+--modify ./my-project "Add rate limiting to the API"
+      ↓
+codebase_index(root):
+  - Python files: AST-based signature extraction (_python_signatures)
+  - JS/TS/Java/Go: regex-based signature extraction (_generic_signatures)
+      ↓
+Knowledge ingest: codebase structure auto-attached as knowledge items
+      ↓
+Architecture prompt: existing code structure injected for context
+      ↓
+Build phase: devs modify existing files (not just create new ones)
+```
+
+`codebase_index(root)` in `hive/connectors.py` produces a structured summary
+of the existing codebase suitable for LLM consumption — function signatures,
+class definitions, and module structure.
+
 ### 7. User Welcome & Profile
 Before any AI agent runs, the pipeline collects the user's identity:
 
@@ -792,6 +885,14 @@ export LLM_MODEL_BIG="claude-sonnet-4-20250514"
 export LLM_MODEL_SMALL="claude-haiku-4-20250414"
 export LLM_FORMAT="auto"                          # auto | anthropic | openai
 export LLM_FALLBACK_MODELS="model-b,model-c"      # optional: 429 rotation pool
+
+# Per-tier provider routing (optional — mix providers per capability tier)
+export LLM_BASE_URL_FAST="http://localhost:11434/v1"
+export LLM_API_KEY_FAST="unused"
+export LLM_FORMAT_FAST="openai"
+export LLM_BASE_URL_POWERFUL="https://api.anthropic.com"
+export LLM_API_KEY_POWERFUL="sk-ant-..."
+export LLM_FORMAT_POWERFUL="anthropic"
 ```
 
 ## Dependencies

@@ -25,6 +25,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any
 
 from hive.agents import Agent, AgentRoster, make_dev_agent, make_reviewer_agent
@@ -123,6 +124,7 @@ logger = logging.getLogger("hive.crew")
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _parse_json(text: str) -> Any:
     """Extract and parse JSON from LLM response (handles markdown fences)."""
     # Try direct parse first
@@ -146,7 +148,7 @@ def _parse_json(text: str) -> Any:
             e = text.rfind(end_char)
             if e > s:
                 try:
-                    return json.loads(text[s:e + 1])
+                    return json.loads(text[s : e + 1])
                 except json.JSONDecodeError:
                     pass
 
@@ -173,9 +175,13 @@ def _parse_contract(text: str) -> dict[str, dict]:
         if file_match:
             current_file = file_match.group(1)
             files[current_file] = {
-                "purpose": "", "deps": [], "exports": [],
-                "patterns": [], "is_frontend": False,
-                "security": "none", "data_classification": "internal",
+                "purpose": "",
+                "deps": [],
+                "exports": [],
+                "patterns": [],
+                "is_frontend": False,
+                "security": "none",
+                "data_classification": "internal",
                 "error_handling": "",
             }
             continue
@@ -263,6 +269,7 @@ def _extract_architecture_text(text: str) -> str:
 #  EPT Crew
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class EPTCrew:
     """
     The Empowered Product Team orchestrator.
@@ -285,13 +292,17 @@ class EPTCrew:
         attach_paths: list[str] | None = None,
         repo_urls: list[str] | None = None,
         plugin_paths: list[str] | None = None,
+        interactive: bool = False,
+        modify_path: str | None = None,
     ):
         self.feature = feature
         self.client = client or _default_llm
         self.verbose = verbose
         self.auto_approve = auto_approve  # skip user sign-offs (for testing)
+        self.interactive = interactive  # interactive build-phase previews
+        self.modify_path = modify_path  # brownfield: path to existing codebase
         self.attach_paths = attach_paths or []  # external knowledge paths
-        self.repo_urls = repo_urls or []        # git repo URLs to clone & study
+        self.repo_urls = repo_urls or []  # git repo URLs to clone & study
 
         # State
         self.board = Blackboard(feature=feature)
@@ -317,6 +328,7 @@ class EPTCrew:
         """Initialize the plugin registry. Returns None if no plugins found."""
         try:
             from hive.plugins.registry import PluginRegistry
+
             registry = PluginRegistry()
             count = registry.discover(explicit_paths=plugin_paths)
             if count:
@@ -331,6 +343,7 @@ class EPTCrew:
         if not self.plugin_registry:
             return None
         from hive.plugins.base import PluginContext
+
         return PluginContext(
             feature=self.feature,
             stack=self.board.research.languages if self.board.research else [],
@@ -348,32 +361,33 @@ class EPTCrew:
 
         # Initialize project folder
         self.board.init_project()
-        self.board.emit(EventType.PHASE_START, "system",
-                        f"Project initialized: {self.board.project_root}")
+        self.board.emit(
+            EventType.PHASE_START, "system", f"Project initialized: {self.board.project_root}"
+        )
 
         # Initialize memory system
         self.memory = MemoryManager(
             project_slug=self.board.project_slug,
             memory_dir=self.board.memory_dir,
         )
-        self.memory.load_global()   # cross-project lessons
-        self.memory.load()          # resume project-level memories if any
+        self.memory.load_global()  # cross-project lessons
+        self.memory.load()  # resume project-level memories if any
 
         # Ordered phase list — resume skips completed ones
         phases = [
-            ("welcome",       self._phase_welcome),
-            ("ingest",        self._phase_ingest),
-            ("research",      self._phase_research),
-            ("interview",     self._phase_interview),
-            ("prd",           self._phase_prd),
-            ("feasibility",   self._phase_feasibility),
-            ("architecture",  self._phase_architecture),
-            ("ratification",  self._phase_ratification),
-            ("crew",          self._phase_crew),
-            ("build",         self._phase_build),
-            ("integration",   self._phase_integration),
-            ("test_docs",     self._phase_test_docs),
-            ("release",       self._phase_release),
+            ("welcome", self._phase_welcome),
+            ("ingest", self._phase_ingest),
+            ("research", self._phase_research),
+            ("interview", self._phase_interview),
+            ("prd", self._phase_prd),
+            ("feasibility", self._phase_feasibility),
+            ("architecture", self._phase_architecture),
+            ("ratification", self._phase_ratification),
+            ("crew", self._phase_crew),
+            ("build", self._phase_build),
+            ("integration", self._phase_integration),
+            ("test_docs", self._phase_test_docs),
+            ("release", self._phase_release),
         ]
 
         done = set(self.board.completed_phases)
@@ -385,8 +399,9 @@ class EPTCrew:
         try:
             for phase_idx, (name, fn) in enumerate(phases):
                 if name in done:
-                    self.board.emit(EventType.PHASE_END, "system",
-                                    f"Skipping {name} (already completed)")
+                    self.board.emit(
+                        EventType.PHASE_END, "system", f"Skipping {name} (already completed)"
+                    )
                     self.ui.flush_events()
                     continue
                 # Phase progress: "Phase 5/13 — 38%"
@@ -403,8 +418,7 @@ class EPTCrew:
                     raise  # always honour user interrupts
                 except BudgetExceeded as exc:
                     self.cost_tracker.end_phase()
-                    self.board.emit(EventType.ERROR, "system",
-                                    f"💰 {exc}")
+                    self.board.emit(EventType.ERROR, "system", f"💰 {exc}")
                     self.ui.flush_events()
                     self._save()
                     raise
@@ -415,7 +429,8 @@ class EPTCrew:
                     # Non-critical phase: save checkpoint, log, continue
                     logger.error("Phase %s failed (non-critical): %s", name, exc)
                     self.board.emit(
-                        EventType.ERROR, "system",
+                        EventType.ERROR,
+                        "system",
                         f"Phase '{name}' failed: {exc} — continuing (non-critical)",
                     )
                     self.ui.flush_events()
@@ -478,8 +493,9 @@ class EPTCrew:
         self.board.save_user_profile()
 
         greeting = self.board.user_profile.name or "there"
-        self.board.emit(EventType.WELCOME, "system",
-                        f"Welcome aboard, {greeting}! Let's build something great.")
+        self.board.emit(
+            EventType.WELCOME, "system", f"Welcome aboard, {greeting}! Let's build something great."
+        )
         self.ui.flush_events()
 
         self.board.completed_phases.append("welcome")
@@ -496,7 +512,7 @@ class EPTCrew:
         self.ui.flush_events()
 
         paths: list[str] = list(self.attach_paths)  # CLI-provided paths
-        git_urls: list[str] = list(self.repo_urls)   # CLI-provided --repo URLs
+        git_urls: list[str] = list(self.repo_urls)  # CLI-provided --repo URLs
 
         # Interactive: ask user for additional paths / repos (unless auto mode)
         if not self.auto_approve:
@@ -515,8 +531,7 @@ class EPTCrew:
         repo_trees: list[str] = []
         repo_items: list[KnowledgeItem] = []
         for url in git_urls:
-            self.board.emit(EventType.THINKING, "system",
-                            f"🔄 Cloning repo: {url}")
+            self.board.emit(EventType.THINKING, "system", f"🔄 Cloning repo: {url}")
             self.ui.flush_events()
 
             try:
@@ -526,12 +541,12 @@ class EPTCrew:
                 self.board.repo_urls.append(url)
                 self.ui.repo_clone_summary(url, len(items), tree)
 
-                self.board.emit(EventType.AGREEMENT, "system",
-                                f"✅ Cloned {url} → {len(items)} files ingested")
+                self.board.emit(
+                    EventType.AGREEMENT, "system", f"✅ Cloned {url} → {len(items)} files ingested"
+                )
                 self.ui.flush_events()
             except RuntimeError as e:
-                self.board.emit(EventType.ERROR, "system",
-                                f"Failed to clone {url}: {e}")
+                self.board.emit(EventType.ERROR, "system", f"Failed to clone {url}: {e}")
                 self.ui.flush_events()
 
         # Store repo trees for Scout's deep analysis later
@@ -544,8 +559,9 @@ class EPTCrew:
         items = repo_items + file_items
 
         if not items and not git_urls:
-            self.board.emit(EventType.PHASE_END, "system",
-                            "No external knowledge attached — skipping ingest.")
+            self.board.emit(
+                EventType.PHASE_END, "system", "No external knowledge attached — skipping ingest."
+            )
             self.ui.flush_events()
             self.board.completed_phases.append("ingest")
             self.ui.phase_footer("Knowledge Ingest")
@@ -560,8 +576,11 @@ class EPTCrew:
             if large_items:
                 scout = AgentRoster.SCOUT
                 for item in large_items:
-                    self.board.emit(EventType.THINKING, "scout",
-                                    f"Summarizing large file: {item.label} ({format_size(item.raw_size)})")
+                    self.board.emit(
+                        EventType.THINKING,
+                        "scout",
+                        f"Summarizing large file: {item.label} ({format_size(item.raw_size)})",
+                    )
                     self.ui.flush_events()
 
                     summary_task = (
@@ -576,7 +595,10 @@ class EPTCrew:
                         f"- Anything a developer would need to know"
                     )
                     item.summary = scout.think(
-                        self.board, summary_task, SCOUT_SYSTEM, self.client,
+                        self.board,
+                        summary_task,
+                        SCOUT_SYSTEM,
+                        self.client,
                     )
                     self.ui.flush_events()
 
@@ -591,7 +613,8 @@ class EPTCrew:
 
         total_size = sum(i.raw_size for i in self.board.knowledge_base)
         self.board.emit(
-            EventType.AGREEMENT, "system",
+            EventType.AGREEMENT,
+            "system",
             f"✅ {len(self.board.knowledge_base)} knowledge items loaded "
             f"({format_size(total_size)} total)"
             + (f" from {len(git_urls)} repo(s)" if git_urls else ""),
@@ -624,7 +647,8 @@ class EPTCrew:
                     added += 1
             if added:
                 self.board.emit(
-                    EventType.AGREEMENT, "system",
+                    EventType.AGREEMENT,
+                    "system",
                     f"🔌 {added} knowledge item(s) from plugins",
                 )
                 self.ui.flush_events()
@@ -634,9 +658,9 @@ class EPTCrew:
         if guidelines:
             self.board.plugin_guidelines = guidelines
             self.board.emit(
-                EventType.AGREEMENT, "system",
-                f"🔌 Guidelines loaded from plugins "
-                f"({len(guidelines)} chars)",
+                EventType.AGREEMENT,
+                "system",
+                f"🔌 Guidelines loaded from plugins ({len(guidelines)} chars)",
             )
             self.ui.flush_events()
 
@@ -654,8 +678,7 @@ class EPTCrew:
         # ── Step 1: Deep repo analysis (if repos were attached) ──
         repo_trees = getattr(self, "_repo_trees", [])
         if self.board.repo_urls and not self.board.repo_analysis:
-            self.board.emit(EventType.THINKING, "scout",
-                            "📖 Deep-studying reference repo(s)...")
+            self.board.emit(EventType.THINKING, "scout", "📖 Deep-studying reference repo(s)...")
             self.ui.flush_events()
 
             # Gather the most important files from the repo as context
@@ -670,15 +693,20 @@ class EPTCrew:
             )
             self._set_memory("scout")
             self.board.repo_analysis = scout.think(
-                self.board, analysis_task,
-                SCOUT_REPO_ANALYSIS_SYSTEM, self.client,
+                self.board,
+                analysis_task,
+                SCOUT_REPO_ANALYSIS_SYSTEM,
+                self.client,
                 max_tokens=4096,
             )
             self._clear_memory()
             self.board.save_repo_analysis()
 
-            self.board.emit(EventType.AGREEMENT, "scout",
-                            "🔍 Reference repo analysis complete — findings will guide the crew")
+            self.board.emit(
+                EventType.AGREEMENT,
+                "scout",
+                "🔍 Reference repo analysis complete — findings will guide the crew",
+            )
             self.ui.flush_events()
 
         # ── Step 2: Normal research (enriched with repo context) ──
@@ -694,17 +722,19 @@ class EPTCrew:
 
         try:
             data = _parse_json(resp)
-            self.board.research = ResearchContext(**{
-                k: v for k, v in data.items()
-                if k in ResearchContext.__dataclass_fields__
-            })
+            self.board.research = ResearchContext(
+                **{k: v for k, v in data.items() if k in ResearchContext.__dataclass_fields__}
+            )
         except (ValueError, TypeError) as e:
-            self.board.emit(EventType.ERROR, "scout",
-                            f"Failed to parse research: {e}. Using defaults.")
+            self.board.emit(
+                EventType.ERROR, "scout", f"Failed to parse research: {e}. Using defaults."
+            )
             self.board.research.raw_summary = resp
-            self._record_mistake("scout",
-                                 "Research response wasn't valid JSON — used defaults",
-                                 context=f"parse error: {e}")
+            self._record_mistake(
+                "scout",
+                "Research response wasn't valid JSON — used defaults",
+                context=f"parse error: {e}",
+            )
 
         # Push research findings to team memory
         r = self.board.research
@@ -715,9 +745,11 @@ class EPTCrew:
         )
 
         self.board.save_research()
-        self.board.emit(EventType.AGREEMENT, "scout",
-                        f"Research complete: {self.board.research.domain} / "
-                        f"{self.board.research.product_type}")
+        self.board.emit(
+            EventType.AGREEMENT,
+            "scout",
+            f"Research complete: {self.board.research.domain} / {self.board.research.product_type}",
+        )
         self.ui.flush_events()
 
         self.board.completed_phases.append("research")
@@ -771,8 +803,9 @@ class EPTCrew:
         self.board.interviews["penny"] = answers
         self.board.save_interviews()
 
-        self.board.emit(EventType.AGREEMENT, "penny",
-                        f"Interview complete: {len(answers)} answers collected.")
+        self.board.emit(
+            EventType.AGREEMENT, "penny", f"Interview complete: {len(answers)} answers collected."
+        )
         self.ui.flush_events()
 
         self.board.completed_phases.append("interview")
@@ -811,8 +844,11 @@ class EPTCrew:
             self.board.prd = resp
             self.board.save_prd()
 
-            self.board.emit(EventType.WRITING, "penny",
-                            f"PRD draft v{attempt + 1} written ({len(resp.splitlines())} lines)")
+            self.board.emit(
+                EventType.WRITING,
+                "penny",
+                f"PRD draft v{attempt + 1} written ({len(resp.splitlines())} lines)",
+            )
             self.ui.flush_events()
 
             # Show diff on revision so the user can see what changed
@@ -821,28 +857,37 @@ class EPTCrew:
 
             # Sign-off
             if self.auto_approve:
-                self.board.record_signoff("prd", True,
-                                          produced_by="Penny 📋 (Product Manager)",
-                                          reviewed_by=["Scout 🔍 (Research Analyst)"])
-                break
-            else:
-                approved, feedback = self.ui.signoff_prompt(
-                    "PRD", resp,
+                self.board.record_signoff(
+                    "prd",
+                    True,
                     produced_by="Penny 📋 (Product Manager)",
                     reviewed_by=["Scout 🔍 (Research Analyst)"],
                 )
-                self.board.record_signoff("prd", approved, feedback,
-                                          produced_by="Penny 📋 (Product Manager)",
-                                          reviewed_by=["Scout 🔍 (Research Analyst)"])
+                break
+            else:
+                approved, feedback = self.ui.signoff_prompt(
+                    "PRD",
+                    resp,
+                    produced_by="Penny 📋 (Product Manager)",
+                    reviewed_by=["Scout 🔍 (Research Analyst)"],
+                )
+                self.board.record_signoff(
+                    "prd",
+                    approved,
+                    feedback,
+                    produced_by="Penny 📋 (Product Manager)",
+                    reviewed_by=["Scout 🔍 (Research Analyst)"],
+                )
                 if approved:
                     break
-                self.board.emit(EventType.DISAGREEMENT, "user",
-                                f"PRD rejected: {feedback}")
+                self.board.emit(EventType.DISAGREEMENT, "user", f"PRD rejected: {feedback}")
                 self.ui.flush_events()
                 # Record the rejection as a lesson for Penny
-                self._record_mistake("penny",
-                                     f"PRD was rejected: {feedback[:200]}",
-                                     context=f"PRD draft v{attempt + 1}")
+                self._record_mistake(
+                    "penny",
+                    f"PRD was rejected: {feedback[:200]}",
+                    context=f"PRD draft v{attempt + 1}",
+                )
             prev_prd = resp
 
         # Push PRD scope insight to the team
@@ -888,12 +933,18 @@ class EPTCrew:
             suggestions = []
 
         if not feasible:
-            self.board.emit(EventType.DISAGREEMENT, "archie",
-                            f"Feasibility concerns: {len(concerns)} issues found")
+            self.board.emit(
+                EventType.DISAGREEMENT,
+                "archie",
+                f"Feasibility concerns: {len(concerns)} issues found",
+            )
             for c in concerns:
-                self.board.emit(EventType.ESCALATION, "archie",
-                                f"[{c.get('severity', '?')}] {c.get('requirement', '?')}: "
-                                f"{c.get('detail', '?')}")
+                self.board.emit(
+                    EventType.ESCALATION,
+                    "archie",
+                    f"[{c.get('severity', '?')}] {c.get('requirement', '?')}: "
+                    f"{c.get('detail', '?')}",
+                )
         else:
             self.board.emit(EventType.AGREEMENT, "archie", "All requirements are feasible ✓")
 
@@ -911,22 +962,31 @@ class EPTCrew:
                 summary += "\nSuggestions:\n" + "\n".join(f"  - {s}" for s in suggestions)
 
             approved, feedback = self.ui.signoff_prompt(
-                "Feasibility", summary,
+                "Feasibility",
+                summary,
                 produced_by="Archie 🏗️ (Tech Architect)",
                 reviewed_by=["Penny 📋 (Product Manager)"],
             )
-            self.board.record_signoff("feasibility", approved, feedback,
-                                      produced_by="Archie 🏗️ (Tech Architect)",
-                                      reviewed_by=["Penny 📋 (Product Manager)"])
+            self.board.record_signoff(
+                "feasibility",
+                approved,
+                feedback,
+                produced_by="Archie 🏗️ (Tech Architect)",
+                reviewed_by=["Penny 📋 (Product Manager)"],
+            )
 
             if not approved:
-                self.board.emit(EventType.DISAGREEMENT, "user",
-                                f"Feasibility concerns noted: {feedback}")
+                self.board.emit(
+                    EventType.DISAGREEMENT, "user", f"Feasibility concerns noted: {feedback}"
+                )
                 self.ui.flush_events()
         else:
-            self.board.record_signoff("feasibility", True,
-                                      produced_by="Archie 🏗️ (Tech Architect)",
-                                      reviewed_by=["Penny 📋 (Product Manager)"])
+            self.board.record_signoff(
+                "feasibility",
+                True,
+                produced_by="Archie 🏗️ (Tech Architect)",
+                reviewed_by=["Penny 📋 (Product Manager)"],
+            )
 
         self.board.completed_phases.append("feasibility")
         self.ui.phase_footer("Feasibility Check")
@@ -940,14 +1000,41 @@ class EPTCrew:
         self.ui.phase_header("Architecture")
         self.ui.flush_events()
 
+        # Brownfield: build codebase index if --modify was used
+        brownfield_ctx = ""
+        if self.modify_path:
+            from hive.connectors import codebase_index
+
+            modify_root = Path(self.modify_path)
+            if modify_root.is_dir():
+                brownfield_ctx = codebase_index(modify_root)
+                self.board.emit(
+                    EventType.THINKING,
+                    "archie",
+                    f"Brownfield mode: indexed {self.modify_path}",
+                )
+                self.ui.flush_events()
+
         archie = AgentRoster.ARCHIE
         prev_arch = ""  # track previous version for diff
 
         for attempt in range(3):
-            context = self.board.full_context_header() if attempt == 0 else (
-                self.board.full_context_header() +
-                f"\n\nPREVIOUS FEEDBACK:\n{self.board.signoffs[-1].feedback}"
+            context = (
+                self.board.full_context_header()
+                if attempt == 0
+                else (
+                    self.board.full_context_header()
+                    + f"\n\nPREVIOUS FEEDBACK:\n{self.board.signoffs[-1].feedback}"
+                )
             )
+            # Append brownfield context so Archie knows the existing codebase
+            if brownfield_ctx:
+                context += (
+                    "\n\n--- EXISTING CODEBASE (modify mode) ---\n"
+                    "You are modifying an existing codebase. Reference existing files "
+                    "when possible. Only create new files when strictly necessary. "
+                    "In the contract, mark files as NEW or MODIFY.\n\n" + brownfield_ctx
+                )
             task = ARCHIE_TASK.format(full_context=context)
             self._set_memory("archie")
             resp = archie.think(self.board, task, ARCHIE_SYSTEM, self.client)
@@ -961,19 +1048,19 @@ class EPTCrew:
             except ValueError as e:
                 self.board.emit(EventType.ERROR, "archie", f"Parse error: {e}")
                 self.ui.flush_events()
-                self._record_mistake("archie",
-                                     f"Architecture response failed to parse: {e}",
-                                     context=f"attempt {attempt + 1}")
+                self._record_mistake(
+                    "archie",
+                    f"Architecture response failed to parse: {e}",
+                    context=f"attempt {attempt + 1}",
+                )
                 if attempt < 2:
                     continue
                 raise
 
             self.board.architecture = arch_text
-            self.board.contract = resp[resp.find("```contract"):]
+            self.board.contract = resp[resp.find("```contract") :]
             self.board.file_plan = list(contract_data.keys())
-            self.board.dep_graph = {
-                f: meta.get("deps", []) for f, meta in contract_data.items()
-            }
+            self.board.dep_graph = {f: meta.get("deps", []) for f, meta in contract_data.items()}
 
             # Purge old registry entries from previous attempts (avoid orphans)
             if attempt > 0:
@@ -992,8 +1079,11 @@ class EPTCrew:
             self.board.save_architecture()
             self.board.save_contract()
 
-            self.board.emit(EventType.WRITING, "archie",
-                            f"Architecture + contract: {len(contract_data)} files defined")
+            self.board.emit(
+                EventType.WRITING,
+                "archie",
+                f"Architecture + contract: {len(contract_data)} files defined",
+            )
             self.ui.flush_events()
 
             # Show diff on revision so the user can see what changed
@@ -1007,28 +1097,38 @@ class EPTCrew:
                 f"Dependency layers: {len(self.board.dep_layers())}"
             )
             if self.auto_approve:
-                self.board.record_signoff("architecture", True,
-                                          produced_by="Archie 🏗️ (Tech Architect)",
-                                          reviewed_by=["Penny 📋 (Product Manager)",
-                                                        "Quinn 🧪 (Quality Engineer)"])
+                self.board.record_signoff(
+                    "architecture",
+                    True,
+                    produced_by="Archie 🏗️ (Tech Architect)",
+                    reviewed_by=["Penny 📋 (Product Manager)", "Quinn 🧪 (Quality Engineer)"],
+                )
                 break
             else:
                 approved, feedback = self.ui.signoff_prompt(
-                    "Architecture + Contract", preview,
+                    "Architecture + Contract",
+                    preview,
                     produced_by="Archie 🏗️ (Tech Architect)",
                     reviewed_by=["Penny 📋 (Product Manager)"],
                 )
-                self.board.record_signoff("architecture", approved, feedback,
-                                          produced_by="Archie 🏗️ (Tech Architect)",
-                                          reviewed_by=["Penny 📋 (Product Manager)"])
+                self.board.record_signoff(
+                    "architecture",
+                    approved,
+                    feedback,
+                    produced_by="Archie 🏗️ (Tech Architect)",
+                    reviewed_by=["Penny 📋 (Product Manager)"],
+                )
                 if approved:
                     break
-                self.board.emit(EventType.DISAGREEMENT, "user",
-                                f"Architecture rejected: {feedback}")
+                self.board.emit(
+                    EventType.DISAGREEMENT, "user", f"Architecture rejected: {feedback}"
+                )
                 self.ui.flush_events()
-                self._record_mistake("archie",
-                                     f"Architecture was rejected: {feedback[:200]}",
-                                     context=f"Architecture draft v{attempt + 1}")
+                self._record_mistake(
+                    "archie",
+                    f"Architecture was rejected: {feedback[:200]}",
+                    context=f"Architecture draft v{attempt + 1}",
+                )
             prev_arch = resp
 
         # Push architecture decisions to team memory
@@ -1062,16 +1162,18 @@ class EPTCrew:
         self.ui.flush_events()
 
         if "NEEDS_CHANGES" in resp.upper():
-            self.board.emit(EventType.DISAGREEMENT, "penny",
-                            "Architecture has gaps vs PRD. Noting for Archie.")
-            self.board.amendments.append(Amendment(
-                requested_by="penny",
-                description="Ratification found gaps — see review.",
-                outcome=resp,
-            ))
+            self.board.emit(
+                EventType.DISAGREEMENT, "penny", "Architecture has gaps vs PRD. Noting for Archie."
+            )
+            self.board.amendments.append(
+                Amendment(
+                    requested_by="penny",
+                    description="Ratification found gaps — see review.",
+                    outcome=resp,
+                )
+            )
         else:
-            self.board.emit(EventType.AGREEMENT, "penny",
-                            "Architecture aligns with PRD ✓")
+            self.board.emit(EventType.AGREEMENT, "penny", "Architecture aligns with PRD ✓")
 
         self.ui.flush_events()
         self.board.completed_phases.append("ratification")
@@ -1103,9 +1205,11 @@ class EPTCrew:
         # Save crew snapshot
         self.board.save_crew(self.agents)
 
-        self.board.emit(EventType.CREW_FORMED, "system",
-                        f"Crew assembled: {len(self.board.active_agents)} active agents, "
-                        f"{dev_count} devs")
+        self.board.emit(
+            EventType.CREW_FORMED,
+            "system",
+            f"Crew assembled: {len(self.board.active_agents)} active agents, {dev_count} devs",
+        )
         self.ui.flush_events()
 
         # Show the crew
@@ -1125,10 +1229,13 @@ class EPTCrew:
         if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
             return exc.response.status_code == 429
         # Stringified 429 from proxies (word boundary to avoid false positives)
-        return bool(re.search(r'\b429\b', str(exc)[:200]))
+        return bool(re.search(r"\b429\b", str(exc)[:200]))
 
     def _retry_rate_limited_files(
-        self, rate_limited_files: list[str], total_files: int, completed: int,
+        self,
+        rate_limited_files: list[str],
+        total_files: int,
+        completed: int,
     ) -> None:
         """Retry files that failed due to 429 rate-limit cascades.
 
@@ -1139,13 +1246,13 @@ class EPTCrew:
         cooldown = int(os.environ.get("HIVE_RATE_LIMIT_COOLDOWN", "30"))
         count = len(rate_limited_files)
         self.board.emit(
-            EventType.LLM_INCIDENT, "system",
+            EventType.LLM_INCIDENT,
+            "system",
             f"⚠️ {count} file(s) hit rate-limit cascade — "
             f"waiting {cooldown}s before retry: {', '.join(rate_limited_files)}",
         )
         self.ui.flush_events()
-        print(f"  ⏳ Rate-limit cooldown: waiting {cooldown}s before retrying "
-              f"{count} file(s)...")
+        print(f"  ⏳ Rate-limit cooldown: waiting {cooldown}s before retrying {count} file(s)...")
         time.sleep(cooldown)
 
         still_failed: list[str] = []
@@ -1160,7 +1267,8 @@ class EPTCrew:
             if success:
                 self.ui.file_status(fname, "approved", "(recovered after cooldown)")
                 self.board.emit(
-                    EventType.VERDICT, "system",
+                    EventType.VERDICT,
+                    "system",
                     f"✅ {fname} recovered after rate-limit retry",
                     target=fname,
                 )
@@ -1174,16 +1282,21 @@ class EPTCrew:
                     )
                 self.ui.file_status(fname, "dropped", "rate-limit — LLM unavailable")
                 self.board.emit(
-                    EventType.ERROR, "system",
+                    EventType.ERROR,
+                    "system",
                     f"❌ {fname} dropped: rate-limit cascade persisted after retry",
                     target=fname,
                 )
 
         if still_failed:
-            print(f"  ⚠️  {len(still_failed)} file(s) could not be recovered: "
-                  f"{', '.join(still_failed)}")
-            print(f"  💡 Resume later with: hive --resume "
-                  f"{self.board.project_root}/checkpoints/board_latest.json")
+            print(
+                f"  ⚠️  {len(still_failed)} file(s) could not be recovered: "
+                f"{', '.join(still_failed)}"
+            )
+            print(
+                f"  💡 Resume later with: hive --resume "
+                f"{self.board.project_root}/checkpoints/board_latest.json"
+            )
         self.ui.flush_events()
 
     def _phase_build(self) -> None:
@@ -1203,8 +1316,11 @@ class EPTCrew:
         rate_limited_files: list[str] = []  # files that failed due to 429 cascade
 
         for layer_idx, layer in enumerate(layers):
-            self.board.emit(EventType.PHASE_START, "system",
-                            f"Build layer {layer_idx + 1}/{len(layers)}: {', '.join(layer)}")
+            self.board.emit(
+                EventType.PHASE_START,
+                "system",
+                f"Build layer {layer_idx + 1}/{len(layers)}: {', '.join(layer)}",
+            )
             self.ui.flush_events()
 
             # Files in the same dep layer have no inter-dependencies — build in parallel
@@ -1228,11 +1344,14 @@ class EPTCrew:
                         logger.error("Error building %s: %s", fname, exc)
                         if self._is_rate_limit_cascade(exc):
                             rate_limited_files.append(fname)
-                            self.ui.file_status(fname, "rate-limited",
-                                                "429 cascade — queued for retry")
+                            self.ui.file_status(
+                                fname, "rate-limited", "429 cascade — queued for retry"
+                            )
                             self.board.emit(
-                                EventType.LLM_INCIDENT, "system",
-                                f"⚠️ {fname}: rate-limit cascade, queued for retry")
+                                EventType.LLM_INCIDENT,
+                                "system",
+                                f"⚠️ {fname}: rate-limit cascade, queued for retry",
+                            )
                             continue
                         success = False
                     if success:
@@ -1260,11 +1379,14 @@ class EPTCrew:
                         except Exception as exc:
                             if self._is_rate_limit_cascade(exc):
                                 rate_limited_files.append(fname)
-                                self.ui.file_status(fname, "rate-limited",
-                                                    "429 cascade — queued for retry")
+                                self.ui.file_status(
+                                    fname, "rate-limited", "429 cascade — queued for retry"
+                                )
                                 self.board.emit(
-                                    EventType.LLM_INCIDENT, "system",
-                                    f"⚠️ {fname}: rate-limit cascade, queued for retry")
+                                    EventType.LLM_INCIDENT,
+                                    "system",
+                                    f"⚠️ {fname}: rate-limit cascade, queued for retry",
+                                )
                                 continue
                             logger.error("Unhandled error building %s: %s", fname, exc)
                             success = False
@@ -1294,9 +1416,7 @@ class EPTCrew:
         if not deps:
             return ""
 
-        parts: list[str] = [
-            "\nDEPENDENCY FILES (full code of your declared dependencies):"
-        ]
+        parts: list[str] = ["\nDEPENDENCY FILES (full code of your declared dependencies):"]
         total_chars = 0
         max_chars = 30_000  # budget to avoid context explosion
 
@@ -1333,11 +1453,10 @@ class EPTCrew:
                 self.board.registry[fname] = entry
 
         # Get contract metadata (use cached parse from _phase_build)
-        contract_data = getattr(self, '_contract_cache', None)
+        contract_data = getattr(self, "_contract_cache", None)
         if contract_data is None:
             contract_data = (
-                _parse_contract(self.board.contract)
-                if "```contract" in self.board.contract else {}
+                _parse_contract(self.board.contract) if "```contract" in self.board.contract else {}
             )
         meta = contract_data.get(fname, {})
 
@@ -1381,11 +1500,10 @@ class EPTCrew:
             code = validate_code_output(code, fname)
         except ValueError as e:
             logger.warning("Code validation failed for %s: %s", fname, e)
-            self.board.emit(EventType.ERROR, dev.id,
-                            f"Code validation: {e}")
-            self._record_mistake(dev.id,
-                                 f"Generated invalid code for {fname}: {e}",
-                                 context="initial generation")
+            self.board.emit(EventType.ERROR, dev.id, f"Code validation: {e}")
+            self._record_mistake(
+                dev.id, f"Generated invalid code for {fname}: {e}", context="initial generation"
+            )
         entry.code = code
         entry.revision = 1
 
@@ -1401,6 +1519,34 @@ class EPTCrew:
         code = self._test_execution_check(fname, entry, dev, system, dep_ctx=dep_ctx)
         entry.code = code
 
+        # ── Interactive preview: let user steer before review ──
+        if self.interactive and not self.auto_approve:
+            action, feedback = self.ui.build_preview(fname, entry.code, dev.name)
+            if action == "skip":
+                self.board.emit(EventType.SPEAKING, "user", f"Skipped {fname}", target=fname)
+                return False
+            elif action == "feedback" and feedback:
+                # Re-generate with user feedback
+                self.ui.file_status(fname, "revising", "user feedback")
+                fb_task = DEV_REVISION_TASK.format(
+                    full_context=self.board.full_context_header(),
+                    approved_interfaces=self.board.approved_interfaces(),
+                    dependency_context=dep_ctx,
+                    filename=fname,
+                    current_code=entry.code,
+                    review_issues=f"User feedback: {feedback}",
+                )
+                self._set_memory(dev.id)
+                code = dev.think(self.board, fb_task, system, self.client)
+                self._clear_memory()
+                code = self._clean_code(code)
+                try:
+                    code = validate_code_output(code, fname)
+                except ValueError as e:
+                    logger.warning("User-feedback revision failed for %s: %s", fname, e)
+                entry.code = code
+                self.ui.flush_events()
+
         # Review loop
         for attempt in range(1, self.MAX_REVISIONS + 1):
             self.ui.file_status(fname, "reviewing", f"attempt {attempt}")
@@ -1409,19 +1555,22 @@ class EPTCrew:
 
             if verdict == "PASS":
                 entry.approved = True
-                self.board.emit(EventType.VERDICT, "quinn",
-                                f"PASS: {fname}", target=fname)
+                self.board.emit(EventType.VERDICT, "quinn", f"PASS: {fname}", target=fname)
                 self.board.save_source_file(entry)
                 self.ui.flush_events()
                 # Record success pattern
                 if entry.revision > 1:
-                    self._record_pattern(dev.id,
-                                         f"File {fname} passed after {entry.revision} revisions",
-                                         context="multiple revisions needed — pay attention to reviews")
+                    self._record_pattern(
+                        dev.id,
+                        f"File {fname} passed after {entry.revision} revisions",
+                        context="multiple revisions needed — pay attention to reviews",
+                    )
                 else:
-                    self._record_pattern(dev.id,
-                                         f"File {fname} passed first try",
-                                         context="clean implementation approach worked")
+                    self._record_pattern(
+                        dev.id,
+                        f"File {fname} passed first try",
+                        context="clean implementation approach worked",
+                    )
                 return True
 
             elif verdict == "PASS_WITH_NOTES":
@@ -1430,29 +1579,39 @@ class EPTCrew:
                 entry.deferred_issues = deferred
                 with self._registry_lock:
                     self.board.all_deferred.extend((fname, i) for i in deferred)
-                self.board.emit(EventType.VERDICT, "quinn",
-                                f"PASS_WITH_NOTES: {fname} ({len(deferred)} deferred)",
-                                target=fname)
+                self.board.emit(
+                    EventType.VERDICT,
+                    "quinn",
+                    f"PASS_WITH_NOTES: {fname} ({len(deferred)} deferred)",
+                    target=fname,
+                )
                 self.board.save_source_file(entry)
                 self.ui.flush_events()
                 # Record deferred issues as lessons for the dev
                 for issue in deferred:
-                    self._record_lesson(dev.id,
-                                        f"Deferred issue in {fname}: {issue.description[:120]}",
-                                        context=f"severity={issue.severity}")
+                    self._record_lesson(
+                        dev.id,
+                        f"Deferred issue in {fname}: {issue.description[:120]}",
+                        context=f"severity={issue.severity}",
+                    )
                 return True
 
             else:  # FAIL
-                self.board.emit(EventType.VERDICT, "quinn",
-                                f"FAIL: {fname} ({len(issues)} issues)",
-                                target=fname)
+                self.board.emit(
+                    EventType.VERDICT,
+                    "quinn",
+                    f"FAIL: {fname} ({len(issues)} issues)",
+                    target=fname,
+                )
                 self.ui.flush_events()
 
                 # Record each failure reason as a mistake for the dev
                 for issue in issues:
-                    self._record_mistake(dev.id,
-                                         f"Review failed {fname}: {issue.description[:120]}",
-                                         context=f"severity={issue.severity}, attempt={attempt}")
+                    self._record_mistake(
+                        dev.id,
+                        f"Review failed {fname}: {issue.description[:120]}",
+                        context=f"severity={issue.severity}, attempt={attempt}",
+                    )
                 # Push blocker issues to team memory so other devs learn
                 blockers = [i for i in issues if i.severity == "blocker"]
                 if blockers:
@@ -1469,9 +1628,7 @@ class EPTCrew:
 
                 # Revise
                 self.ui.file_status(fname, "revising", f"→ {dev.name}")
-                review_text = "\n".join(
-                    f"- [{i.severity}] {i.description}" for i in issues
-                )
+                review_text = "\n".join(f"- [{i.severity}] {i.description}" for i in issues)
                 rev_task = DEV_REVISION_TASK.format(
                     full_context=self.board.full_context_header(),
                     approved_interfaces=self.board.approved_interfaces(),
@@ -1490,8 +1647,7 @@ class EPTCrew:
                     code = validate_code_output(code, fname)
                 except ValueError as e:
                     logger.warning("Revision validation failed for %s: %s", fname, e)
-                    self.board.emit(EventType.ERROR, dev.id,
-                                    f"Revision validation: {e}")
+                    self.board.emit(EventType.ERROR, dev.id, f"Revision validation: {e}")
                 entry.code = code
                 entry.revision += 1
 
@@ -1501,14 +1657,22 @@ class EPTCrew:
 
                 # Re-run tests after revision
                 code = self._test_execution_check(
-                    fname, entry, dev, system, dep_ctx=dep_ctx,
+                    fname,
+                    entry,
+                    dev,
+                    system,
+                    dep_ctx=dep_ctx,
                 )
                 entry.code = code
 
         return False
 
     def _sandbox_check(
-        self, fname: str, entry: FileEntry, dev: Agent, system: str,
+        self,
+        fname: str,
+        entry: FileEntry,
+        dev: Agent,
+        system: str,
         max_sandbox_retries: int = 2,
         dep_ctx: str = "",
     ) -> str:
@@ -1533,23 +1697,28 @@ class EPTCrew:
             result = check_file_in_context(fname, entry.code, file_set)
 
             if result.success:
-                self.board.emit(EventType.SPEAKING, "system",
-                                f"🧪 Sandbox: {fname} — {result.feedback}")
+                self.board.emit(
+                    EventType.SPEAKING, "system", f"🧪 Sandbox: {fname} — {result.feedback}"
+                )
                 self.ui.flush_events()
                 return entry.code
 
             # Sandbox found errors — let the dev self-correct
-            self.board.emit(EventType.ERROR, "system",
-                            f"🧪 Sandbox: {fname} — {result.feedback}")
+            self.board.emit(EventType.ERROR, "system", f"🧪 Sandbox: {fname} — {result.feedback}")
             self.ui.flush_events()
 
             if sandbox_attempt >= max_sandbox_retries:
                 # Give up on sandbox self-correction, let the reviewer handle it
-                self.board.emit(EventType.SPEAKING, "system",
-                                f"🧪 Sandbox: {fname} — exceeded retries, proceeding to review")
-                self._record_mistake(dev.id,
-                                     f"Sandbox failed for {fname}: {result.output[:200]}",
-                                     context="sandbox self-correction exhausted")
+                self.board.emit(
+                    EventType.SPEAKING,
+                    "system",
+                    f"🧪 Sandbox: {fname} — exceeded retries, proceeding to review",
+                )
+                self._record_mistake(
+                    dev.id,
+                    f"Sandbox failed for {fname}: {result.output[:200]}",
+                    context="sandbox self-correction exhausted",
+                )
                 return entry.code
 
             # Ask the dev to fix based on real execution output
@@ -1577,7 +1746,11 @@ class EPTCrew:
         return entry.code
 
     def _self_reflect(
-        self, fname: str, entry: FileEntry, dev: Agent, system: str,
+        self,
+        fname: str,
+        entry: FileEntry,
+        dev: Agent,
+        system: str,
         meta: dict,
     ) -> str:
         """Dev agent self-critiques its own code before sending to reviewers.
@@ -1598,7 +1771,7 @@ class EPTCrew:
             exports=meta.get("exports", []),
             patterns=meta.get("patterns", []),
             code=entry.code,
-            approved_interfaces=self.board.approved_interfaces(),
+            approved_interfaces=self.board.approved_signatures(),
         )
         self._set_memory(dev.id)
         try:
@@ -1619,15 +1792,20 @@ class EPTCrew:
 
         # Only accept if reflection changed something
         if reflected.strip() != entry.code.strip():
-            self.board.emit(EventType.SPEAKING, dev.id,
-                            f"🔍 Self-reflection improved {fname}")
-            self._record_pattern(dev.id,
-                                 f"Self-reflection caught issues in {fname}",
-                                 context="pre-review self-correction")
+            self.board.emit(EventType.SPEAKING, dev.id, f"🔍 Self-reflection improved {fname}")
+            self._record_pattern(
+                dev.id,
+                f"Self-reflection caught issues in {fname}",
+                context="pre-review self-correction",
+            )
         return reflected
 
     def _test_execution_check(
-        self, fname: str, entry: FileEntry, dev: Agent, system: str,
+        self,
+        fname: str,
+        entry: FileEntry,
+        dev: Agent,
+        system: str,
         dep_ctx: str = "",
     ) -> str:
         """Run actual pytest on test files during build, feeding failures to dev.
@@ -1674,7 +1852,8 @@ class EPTCrew:
 
                 if result.success:
                     self.board.emit(
-                        EventType.SPEAKING, "system",
+                        EventType.SPEAKING,
+                        "system",
                         f"✅ Tests passed: {tf} (for {fname})",
                     )
                     self.ui.flush_events()
@@ -1683,21 +1862,21 @@ class EPTCrew:
 
                 # Tests failed — feed output to dev
                 self.board.emit(
-                    EventType.ERROR, "system",
+                    EventType.ERROR,
+                    "system",
                     f"❌ Tests failed: {tf} (for {fname})",
                 )
                 self.ui.flush_events()
 
                 if test_fix_attempt >= self.MAX_TEST_FIX_ATTEMPTS:
                     self.board.emit(
-                        EventType.SPEAKING, "system",
-                        f"🧪 Test fix attempts exhausted for {fname}"
-                        " — proceeding to review",
+                        EventType.SPEAKING,
+                        "system",
+                        f"🧪 Test fix attempts exhausted for {fname} — proceeding to review",
                     )
                     self._record_mistake(
                         dev.id,
-                        f"Test failures in {tf} for {fname}: "
-                        f"{result.output[:200]}",
+                        f"Test failures in {tf} for {fname}: {result.output[:200]}",
                         context="test execution feedback exhausted",
                     )
                     entry.test_output = result.output
@@ -1707,7 +1886,7 @@ class EPTCrew:
                 self.ui.file_status(fname, "test-fix", f"→ {dev.name}")
                 fix_task = DEV_TEST_FIX_TASK.format(
                     full_context=self.board.full_context_header(),
-                    approved_interfaces=self.board.approved_interfaces(),
+                    approved_interfaces=self.board.approved_signatures(),
                     dependency_context=dep_ctx,
                     filename=fname,
                     current_code=entry.code,
@@ -1723,7 +1902,9 @@ class EPTCrew:
                     code = validate_code_output(code, fname)
                 except ValueError as e:
                     logger.warning(
-                        "Test-fix validation failed for %s: %s", fname, e,
+                        "Test-fix validation failed for %s: %s",
+                        fname,
+                        e,
                     )
                 entry.code = code
                 # Update the file set for the next attempt
@@ -1762,7 +1943,7 @@ class EPTCrew:
 
         # Include contract specs for declared dependencies
         deps = meta.get("deps", [])
-        contract_data = getattr(self, '_contract_cache', None) or {}
+        contract_data = getattr(self, "_contract_cache", None) or {}
         if deps:
             parts.append("\n  Dependency contract specs:")
             for dep in deps:
@@ -1804,9 +1985,15 @@ class EPTCrew:
 
         # Keywords that signal an "unapproved dependency" complaint
         dep_keywords = (
-            "not yet approved", "not approved", "hasn't been approved",
-            "has not been approved", "not in the approved", "missing dependency",
-            "unapproved", "not yet built", "hasn't been built",
+            "not yet approved",
+            "not approved",
+            "hasn't been approved",
+            "has not been approved",
+            "not in the approved",
+            "missing dependency",
+            "unapproved",
+            "not yet built",
+            "hasn't been built",
         )
 
         changed = False
@@ -1816,8 +2003,7 @@ class EPTCrew:
             desc_lower = issue.description.lower()
             # Check if the issue mentions an unapproved contract dep
             mentions_dep = any(
-                dep.lower().rstrip(".py") in desc_lower
-                or dep.lower() in desc_lower
+                dep.lower().rstrip(".py") in desc_lower or dep.lower() in desc_lower
                 for dep in unapproved_contract
             )
             mentions_keyword = any(kw in desc_lower for kw in dep_keywords)
@@ -1840,7 +2026,7 @@ class EPTCrew:
         worst_verdict = "PASS"
 
         # Build contract spec for this specific file
-        contract_data = getattr(self, '_contract_cache', None) or {}
+        contract_data = getattr(self, "_contract_cache", None) or {}
         meta = contract_data.get(fname, {})
         contract_spec = self._format_contract_spec(fname, meta)
 
@@ -1848,9 +2034,7 @@ class EPTCrew:
         file_deps = set(meta.get("deps", []))
         all_contract_files = set(contract_data.keys())
         contract_deps = file_deps & all_contract_files  # deps that ARE in contract
-        approved_files = {
-            f for f, e in self.board.registry.items() if e.approved
-        }
+        approved_files = {f for f, e in self.board.registry.items() if e.approved}
 
         # On large builds (>8 files), delegate to a sub-reviewer so Quinn isn't the
         # sole bottleneck. Sub-reviewers use FAST tier; Quinn does final integration pass.
@@ -1858,8 +2042,7 @@ class EPTCrew:
         if large_build:
             reviewer_idx = list(self.board.file_plan).index(fname) % 4
             reviewer = make_reviewer_agent(reviewer_idx)
-            self.board.emit(EventType.SPEAKING, reviewer.id,
-                            f"Sub-review: {fname}")
+            self.board.emit(EventType.SPEAKING, reviewer.id, f"Sub-review: {fname}")
         else:
             reviewer = AgentRoster.QUINN
 
@@ -1878,7 +2061,10 @@ class EPTCrew:
         verdict, issues = _parse_verdict(resp)
         # Programmatic guard: downgrade dep-related blockers for contract deps
         verdict, issues = self._downgrade_dep_blockers(
-            issues, verdict, contract_deps, approved_files,
+            issues,
+            verdict,
+            contract_deps,
+            approved_files,
         )
         for i in issues:
             i.from_agent = reviewer.id
@@ -1887,14 +2073,20 @@ class EPTCrew:
             worst_verdict = "FAIL"
             # On a FAIL from a sub-reviewer, escalate to Quinn for second opinion
             if large_build:
-                self.board.emit(EventType.SPEAKING, "quinn",
-                                f"Sub-reviewer flagged FAIL on {fname} — re-reviewing")
+                self.board.emit(
+                    EventType.SPEAKING,
+                    "quinn",
+                    f"Sub-reviewer flagged FAIL on {fname} — re-reviewing",
+                )
                 self._set_memory("quinn")
                 resp2 = quinn.think(self.board, task, QUINN_SYSTEM, self.client)
                 self._clear_memory()
                 v2, iss2 = _parse_verdict(resp2)
                 v2, iss2 = self._downgrade_dep_blockers(
-                    iss2, v2, contract_deps, approved_files,
+                    iss2,
+                    v2,
+                    contract_deps,
+                    approved_files,
                 )
                 for i in iss2:
                     i.from_agent = "quinn"
@@ -1944,11 +2136,16 @@ class EPTCrew:
         return worst_verdict, all_issues
 
     def _escalate_to_judge(
-        self, fname: str, entry: FileEntry, issues: list[Issue], attempt: int,
+        self,
+        fname: str,
+        entry: FileEntry,
+        issues: list[Issue],
+        attempt: int,
     ) -> bool:
         """Let Judge decide the fate of a file that keeps failing."""
-        self.board.emit(EventType.ESCALATION, "system",
-                        f"Escalating {fname} to Judge after {attempt} failures")
+        self.board.emit(
+            EventType.ESCALATION, "system", f"Escalating {fname} to Judge after {attempt} failures"
+        )
         self.ui.flush_events()
 
         judge = AgentRoster.JUDGE
@@ -1968,39 +2165,47 @@ class EPTCrew:
 
         if "APPROVE" in resp.upper() and "REJECT" not in resp.upper():
             entry.approved = True
-            deferred = [Issue(severity="deferred", description=i.description, code="")
-                        for i in issues]
+            deferred = [
+                Issue(severity="deferred", description=i.description, code="") for i in issues
+            ]
             entry.deferred_issues = deferred
             self.board.all_deferred.extend((fname, i) for i in deferred)
-            self.board.emit(EventType.VERDICT, "judge",
-                            f"APPROVED (with deferred): {fname}")
+            self.board.emit(EventType.VERDICT, "judge", f"APPROVED (with deferred): {fname}")
             self.board.save_source_file(entry)
             self.ui.flush_events()
             # Record the escalation outcome as a lesson
-            self._record_lesson("judge",
-                                f"Approved {fname} with {len(deferred)} deferred issues after {attempt} dev attempts",
-                                context="escalation resolved by accepting with notes")
+            self._record_lesson(
+                "judge",
+                f"Approved {fname} with {len(deferred)} deferred issues after {attempt} dev attempts",
+                context="escalation resolved by accepting with notes",
+            )
             return True
 
         elif "AMEND_CONTRACT" in resp.upper():
             # Contract amendment — apply it and rebuild the file once
-            amend_match = re.search(r"AMENDMENT:\s*(.*?)(?:RATIONALE:|$)",
-                                    resp, re.DOTALL | re.IGNORECASE)
+            amend_match = re.search(
+                r"AMENDMENT:\s*(.*?)(?:RATIONALE:|$)", resp, re.DOTALL | re.IGNORECASE
+            )
             amend_text = amend_match.group(1).strip() if amend_match else resp
-            self.board.amendments.append(Amendment(
-                requested_by="judge",
-                description=amend_text,
-                outcome="contract_amended",
-            ))
-            self.board.emit(EventType.VERDICT, "judge",
-                            f"AMEND CONTRACT for {fname}")
+            self.board.amendments.append(
+                Amendment(
+                    requested_by="judge",
+                    description=amend_text,
+                    outcome="contract_amended",
+                )
+            )
+            self.board.emit(EventType.VERDICT, "judge", f"AMEND CONTRACT for {fname}")
             self.ui.flush_events()
-            self._record_lesson("judge",
-                                f"Contract amendment needed for {fname}: {amend_text[:120]}",
-                                context="original contract was insufficient")
-            self._push_team_insight("judge",
-                                    f"Contract was amended for {fname} — check your deps",
-                                    for_agents=["archie"])
+            self._record_lesson(
+                "judge",
+                f"Contract amendment needed for {fname}: {amend_text[:120]}",
+                context="original contract was insufficient",
+            )
+            self._push_team_insight(
+                "judge",
+                f"Contract was amended for {fname} — check your deps",
+                for_agents=["archie"],
+            )
 
             # ── Apply amendment: append to contract and refresh cache ──
             self.board.contract += f"\n\n# Amendment (by Judge for {fname}):\n{amend_text}"
@@ -2008,8 +2213,9 @@ class EPTCrew:
                 self._contract_cache = _parse_contract(self.board.contract)
 
             # ── Rebuild the file with the amended contract (one extra attempt) ──
-            self.board.emit(EventType.SPEAKING, "system",
-                            f"🔄 Rebuilding {fname} with amended contract...")
+            self.board.emit(
+                EventType.SPEAKING, "system", f"🔄 Rebuilding {fname} with amended contract..."
+            )
             self.ui.file_status(fname, "rebuilding", "post-amendment")
             self.ui.flush_events()
 
@@ -2028,12 +2234,14 @@ class EPTCrew:
                 success = False
 
             if success:
-                self.board.emit(EventType.SPEAKING, "system",
-                                f"✅ {fname} approved after contract amendment")
+                self.board.emit(
+                    EventType.SPEAKING, "system", f"✅ {fname} approved after contract amendment"
+                )
             else:
                 entry.skip_reason = "contract amended by Judge — rebuild did not pass"
-                self.board.emit(EventType.SPEAKING, "system",
-                                f"⚠️ {fname} still failed after amendment rebuild")
+                self.board.emit(
+                    EventType.SPEAKING, "system", f"⚠️ {fname} still failed after amendment rebuild"
+                )
             self.ui.flush_events()
             return success
 
@@ -2041,9 +2249,11 @@ class EPTCrew:
             entry.skip_reason = "Rejected by Judge after max revisions"
             self.board.emit(EventType.VERDICT, "judge", f"REJECTED: {fname}")
             self.ui.flush_events()
-            self._record_lesson("judge",
-                                f"Rejected {fname} after {attempt} attempts — file couldn't meet quality bar",
-                                context="max revisions exceeded, fundamental issues")
+            self._record_lesson(
+                "judge",
+                f"Rejected {fname} after {attempt} attempts — file couldn't meet quality bar",
+                context="max revisions exceeded, fundamental issues",
+            )
             return False
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2051,7 +2261,8 @@ class EPTCrew:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _integration_test_fix_loop(
-        self, all_files: dict[str, str],
+        self,
+        all_files: dict[str, str],
     ) -> dict[str, str]:
         """Run multi-file integration tests and fix failures in a loop.
 
@@ -2066,7 +2277,8 @@ class EPTCrew:
         """
         for fix_round in range(1, self.MAX_INTEGRATION_FIXES + 1):
             self.board.emit(
-                EventType.SPEAKING, "system",
+                EventType.SPEAKING,
+                "system",
                 f"🔧 Integration fix round {fix_round}/{self.MAX_INTEGRATION_FIXES}...",
             )
             self.ui.flush_events()
@@ -2081,8 +2293,9 @@ class EPTCrew:
                     failures.append((tf, result.output))
 
             if not failures:
-                self.board.emit(EventType.SPEAKING, "system",
-                                "✅ All integration tests pass after fixes")
+                self.board.emit(
+                    EventType.SPEAKING, "system", "✅ All integration tests pass after fixes"
+                )
                 self.ui.flush_events()
                 break
 
@@ -2101,8 +2314,7 @@ class EPTCrew:
 
                 # Find the dev who built this file
                 dev_agents = [
-                    a for a in self.agents.values()
-                    if a.id.startswith("dev_") and a.active
+                    a for a in self.agents.values() if a.id.startswith("dev_") and a.active
                 ]
                 dev = None
                 for a in dev_agents:
@@ -2115,12 +2327,11 @@ class EPTCrew:
                     continue
 
                 self.board.emit(
-                    EventType.SPEAKING, "system",
-                    f"🔧 Routing {tf} failure to {dev.name}"
-                    f" (fixing {source_name})",
+                    EventType.SPEAKING,
+                    "system",
+                    f"🔧 Routing {tf} failure to {dev.name} (fixing {source_name})",
                 )
-                self.ui.file_status(source_name, "integration-fix",
-                                    f"→ {dev.name}")
+                self.ui.file_status(source_name, "integration-fix", f"→ {dev.name}")
                 self.ui.flush_events()
 
                 # Get dependency context
@@ -2129,11 +2340,12 @@ class EPTCrew:
                 dep_ctx = self._dependency_context(source_name, meta)
 
                 system = DEV_SYSTEM.format(
-                    dev_name=dev.name, dev_tagline=dev.tagline,
+                    dev_name=dev.name,
+                    dev_tagline=dev.tagline,
                 )
                 fix_task = DEV_INTEGRATION_FIX_TASK.format(
                     full_context=self.board.full_context_header(),
-                    approved_interfaces=self.board.approved_interfaces(),
+                    approved_interfaces=self.board.approved_signatures(),
                     dependency_context=dep_ctx,
                     filename=source_name,
                     current_code=entry.code,
@@ -2151,7 +2363,8 @@ class EPTCrew:
                 except ValueError as e:
                     logger.warning(
                         "Integration fix validation failed for %s: %s",
-                        source_name, e,
+                        source_name,
+                        e,
                     )
                     continue
 
@@ -2161,7 +2374,8 @@ class EPTCrew:
                     self.board.save_source_file(entry)
                     any_fixed = True
                     self.board.emit(
-                        EventType.SPEAKING, dev.id,
+                        EventType.SPEAKING,
+                        dev.id,
                         f"🔧 Fixed {source_name} for integration",
                     )
                     self._record_pattern(
@@ -2172,9 +2386,9 @@ class EPTCrew:
 
             if not any_fixed:
                 self.board.emit(
-                    EventType.SPEAKING, "system",
-                    "⚠️ Integration fix round produced no changes"
-                    " — stopping fix loop",
+                    EventType.SPEAKING,
+                    "system",
+                    "⚠️ Integration fix round produced no changes — stopping fix loop",
                 )
                 self.ui.flush_events()
                 break
@@ -2194,17 +2408,18 @@ class EPTCrew:
         sandbox_section = ""
         if SANDBOX_ENABLED:
             all_files = {
-                name: fe.code for name, fe in self.board.registry.items()
-                if fe.approved and fe.code
+                name: fe.code for name, fe in self.board.registry.items() if fe.approved and fe.code
             }
             if all_files:
-                self.board.emit(EventType.SPEAKING, "system",
-                                f"🧪 Running sandbox on {len(all_files)} approved files...")
+                self.board.emit(
+                    EventType.SPEAKING,
+                    "system",
+                    f"🧪 Running sandbox on {len(all_files)} approved files...",
+                )
                 self.ui.flush_events()
                 sb_result = run_code_checks(all_files)
                 status = "PASS ✓" if sb_result.success else "FAIL ✗"
-                self.board.emit(EventType.SPEAKING, "system",
-                                f"🧪 Sandbox integration: {status}")
+                self.board.emit(EventType.SPEAKING, "system", f"🧪 Sandbox integration: {status}")
                 self.ui.flush_events()
 
                 # ── Multi-file test execution + fix loop ────────────────
@@ -2213,8 +2428,9 @@ class EPTCrew:
                     # Re-run after fixes to get final status
                     sb_result = run_code_checks(all_files)
                     status = "PASS ✓" if sb_result.success else "FAIL ✗"
-                    self.board.emit(EventType.SPEAKING, "system",
-                                    f"🧪 Sandbox integration (post-fix): {status}")
+                    self.board.emit(
+                        EventType.SPEAKING, "system", f"🧪 Sandbox integration (post-fix): {status}"
+                    )
                     self.ui.flush_events()
 
                 sandbox_section = (
@@ -2225,19 +2441,20 @@ class EPTCrew:
 
         # ── PII / Security scan: static regex-based analysis ─────────────
         all_source = {
-            name: fe.code for name, fe in self.board.registry.items()
-            if fe.approved and fe.code
+            name: fe.code for name, fe in self.board.registry.items() if fe.approved and fe.code
         }
         pii_findings = scan_pii(all_source)
         pii_report = format_pii_findings(pii_findings)
         self.board.pii_report = pii_report
         if pii_findings:
-            self.board.emit(EventType.SPEAKING, "system",
-                            f"🔒 PII/Security scan: {len(pii_findings)} finding(s)")
+            self.board.emit(
+                EventType.SPEAKING,
+                "system",
+                f"🔒 PII/Security scan: {len(pii_findings)} finding(s)",
+            )
             sandbox_section += f"\n\n{pii_report}\n"
         else:
-            self.board.emit(EventType.SPEAKING, "system",
-                            "🔒 PII/Security scan: CLEAN")
+            self.board.emit(EventType.SPEAKING, "system", "🔒 PII/Security scan: CLEAN")
         self.ui.flush_events()
 
         quinn = AgentRoster.QUINN
@@ -2247,8 +2464,7 @@ class EPTCrew:
             sandbox_section=sandbox_section,
         )
         self._set_memory("quinn")
-        resp = quinn.think(self.board, task, INTEGRATION_SYSTEM, self.client,
-                           max_tokens=4096)
+        resp = quinn.think(self.board, task, INTEGRATION_SYSTEM, self.client, max_tokens=4096)
         self._clear_memory()
         self.ui.flush_events()
 
@@ -2257,29 +2473,34 @@ class EPTCrew:
 
         if "PASS" in resp.upper():
             self.board.integration_verdict = "PASS"
-            self.board.emit(EventType.VERDICT, "quinn",
-                            "Integration: PASS ✓")
+            self.board.emit(EventType.VERDICT, "quinn", "Integration: PASS ✓")
         else:
             self.board.integration_verdict = "FAIL"
-            self.board.emit(EventType.VERDICT, "quinn",
-                            "Integration: FAIL — see notes")
+            self.board.emit(EventType.VERDICT, "quinn", "Integration: FAIL — see notes")
 
             # ── Integration Gate: FAIL requires explicit override ──
             if self.auto_approve:
                 self.board.emit(
-                    EventType.ESCALATION, "quinn",
+                    EventType.ESCALATION,
+                    "quinn",
                     "⚠️  Integration FAILED in auto mode — proceeding with warning. "
                     "Review integration notes in delivery summary.",
                 )
             else:
                 override = self.ui.integration_gate(resp)
                 if override:
-                    self.board.emit(EventType.AGREEMENT, "user",
-                                    "User overrode integration FAIL — proceeding to release")
+                    self.board.emit(
+                        EventType.AGREEMENT,
+                        "user",
+                        "User overrode integration FAIL — proceeding to release",
+                    )
                     self.board.integration_verdict = "FAIL_OVERRIDDEN"
                 else:
-                    self.board.emit(EventType.DISAGREEMENT, "user",
-                                    "User declined to override — pipeline halted at integration")
+                    self.board.emit(
+                        EventType.DISAGREEMENT,
+                        "user",
+                        "User declined to override — pipeline halted at integration",
+                    )
                     self._save()
                     self.board.completed_phases.append("integration")
                     self.ui.phase_footer("Integration Testing")
@@ -2308,15 +2529,20 @@ class EPTCrew:
             if up.role:
                 user_info += f" ({up.role})"
 
-        deferred_text = "\n".join(
-            f"- [{i.severity}] {fname}: {i.description}"
-            for fname, i in self.board.all_deferred
-        ) or "(none)"
+        deferred_text = (
+            "\n".join(
+                f"- [{i.severity}] {fname}: {i.description}" for fname, i in self.board.all_deferred
+            )
+            or "(none)"
+        )
 
         prd_lines = self.board.prd.splitlines()
-        prd_summary = "\n".join(
-            l for l in prd_lines if l.strip().startswith("FR-") or l.strip().startswith("##")
-        ) or self.board.prd[:2000]
+        prd_summary = (
+            "\n".join(
+                l for l in prd_lines if l.strip().startswith("FR-") or l.strip().startswith("##")
+            )
+            or self.board.prd[:2000]
+        )
 
         # ── UAT — Alex writes from pseudo-user perspective ──
         uat_task = UAT_TASK.format(
@@ -2368,12 +2594,14 @@ class EPTCrew:
             deferred_issues=deferred_text,
             pii_report=pii_report,
         )
-        self.board.emit(EventType.WRITING, "quinn",
-                        "Generating regression test suite...")
+        self.board.emit(EventType.WRITING, "quinn", "Generating regression test suite...")
         self.ui.flush_events()
         self._set_memory("quinn")
         regression_resp = quinn.think(
-            self.board, regression_task, REGRESSION_SYSTEM, self.client,
+            self.board,
+            regression_task,
+            REGRESSION_SYSTEM,
+            self.client,
             max_tokens=8192,
         )
         self._clear_memory()
@@ -2382,8 +2610,7 @@ class EPTCrew:
         regression_code = self._clean_code(regression_resp)
         regression_path = self.board.src_dir / "test_regression.py"
         atomic_write(regression_path, regression_code)
-        self.board.emit(EventType.WRITING, "quinn",
-                        f"Regression tests saved: {regression_path}")
+        self.board.emit(EventType.WRITING, "quinn", f"Regression tests saved: {regression_path}")
         self.ui.flush_events()
 
         self._save()
@@ -2401,22 +2628,28 @@ class EPTCrew:
 
         penny = AgentRoster.PENNY
 
-        deferred_text = "\n".join(
-            f"- [{i.severity}] {fname}: {i.description}"
-            for fname, i in self.board.all_deferred
-        ) or "(none)"
+        deferred_text = (
+            "\n".join(
+                f"- [{i.severity}] {fname}: {i.description}" for fname, i in self.board.all_deferred
+            )
+            or "(none)"
+        )
 
-        amend_text = "\n".join(
-            f"- [{a.requested_by}] {a.description}" for a in self.board.amendments
-        ) or "(none)"
+        amend_text = (
+            "\n".join(f"- [{a.requested_by}] {a.description}" for a in self.board.amendments)
+            or "(none)"
+        )
 
         # Build signoff attribution summary for release notes
-        signoff_log = "\n".join(
-            f"- {so.artifact} v{so.version}: {'Approved' if so.approved else 'Rejected'}"
-            + (f" | Produced by: {so.produced_by}" if so.produced_by else "")
-            + (f" | Reviewed by: {', '.join(so.reviewed_by)}" if so.reviewed_by else "")
-            for so in self.board.signoffs
-        ) or "(none)"
+        signoff_log = (
+            "\n".join(
+                f"- {so.artifact} v{so.version}: {'Approved' if so.approved else 'Rejected'}"
+                + (f" | Produced by: {so.produced_by}" if so.produced_by else "")
+                + (f" | Reviewed by: {', '.join(so.reviewed_by)}" if so.reviewed_by else "")
+                for so in self.board.signoffs
+            )
+            or "(none)"
+        )
 
         # User context for release notes
         user_info = ""
@@ -2448,8 +2681,7 @@ class EPTCrew:
         # Save release notes (atomic write)
         release_path = self.board.docs_dir / "release_notes.md"
         atomic_write(release_path, resp)
-        self.board.emit(EventType.WRITING, "penny",
-                        f"Release notes saved: {release_path}")
+        self.board.emit(EventType.WRITING, "penny", f"Release notes saved: {release_path}")
 
         # ── Handover document ──
         self._generate_handover(deferred_text, amend_text, signoff_log, user_info)
@@ -2464,8 +2696,11 @@ class EPTCrew:
         new_lessons = self.memory.distill_to_global()
         self.memory.save_global()
         if new_lessons:
-            self.board.emit(EventType.AGREEMENT, "system",
-                            f"💡 {len(new_lessons)} lessons distilled to global memory")
+            self.board.emit(
+                EventType.AGREEMENT,
+                "system",
+                f"💡 {len(new_lessons)} lessons distilled to global memory",
+            )
 
         # ── Clean up temp dirs (cloned repos) ──
         cleanup = get_cleanup_registry()
@@ -2536,8 +2771,12 @@ class EPTCrew:
             if entry.approved and entry.code:
                 for line in entry.code.splitlines():
                     stripped = line.strip()
-                    if stripped.startswith("import ") or stripped.startswith("from ") or \
-                       stripped.startswith("require(") or stripped.startswith("import {"):
+                    if (
+                        stripped.startswith("import ")
+                        or stripped.startswith("from ")
+                        or stripped.startswith("require(")
+                        or stripped.startswith("import {")
+                    ):
                         import_lines.append(stripped)
         source_imports = "\n".join(sorted(set(import_lines)))[:3000]
 
@@ -2556,8 +2795,7 @@ class EPTCrew:
             approved_summary=self.board.approved_summary(),
             architecture_summary=architecture_summary,
         )
-        self.board.emit(EventType.WRITING, "penny",
-                        f"Generating {stack} packaging artifacts...")
+        self.board.emit(EventType.WRITING, "penny", f"Generating {stack} packaging artifacts...")
         self.ui.flush_events()
         self._set_memory("penny")
         resp = penny.think(self.board, task, PACKAGING_SYSTEM, self.client, max_tokens=6000)
@@ -2565,9 +2803,7 @@ class EPTCrew:
 
         # Parse and write each artifact from fenced blocks
         artifact_count = 0
-        for match in re.finditer(
-            r"```filename:\s*(\S+)\s*\n(.*?)```", resp, re.DOTALL
-        ):
+        for match in re.finditer(r"```filename:\s*(\S+)\s*\n(.*?)```", resp, re.DOTALL):
             filename = match.group(1).strip()
             content = match.group(2)
             artifact_path = self.board.src_dir / filename
@@ -2588,10 +2824,13 @@ class EPTCrew:
         dm = AgentRoster.DM
 
         # Build list of docs that were generated
-        docs_list = "\n".join(
-            f"- {p.name} ({p.stat().st_size // 1024} KB)"
-            for p in sorted(self.board.docs_dir.glob("*.md"))
-        ) or "(none)"
+        docs_list = (
+            "\n".join(
+                f"- {p.name} ({p.stat().st_size // 1024} KB)"
+                for p in sorted(self.board.docs_dir.glob("*.md"))
+            )
+            or "(none)"
+        )
 
         task = DM_TASK.format(
             feature=self.feature,
@@ -2625,7 +2864,8 @@ class EPTCrew:
     def _set_memory(self, agent_id: str) -> None:
         """Set the memory context on the board for the next agent.think() call."""
         self.board.memory_context = self.memory.context_for_agent(
-            agent_id, phase=self.board.current_phase,
+            agent_id,
+            phase=self.board.current_phase,
         )
 
     def _clear_memory(self) -> None:
@@ -2662,8 +2902,9 @@ class EPTCrew:
             source_project=self.board.project_slug,
         )
 
-    def _push_team_insight(self, agent_id: str, content: str,
-                           for_agents: list[str] | None = None) -> None:
+    def _push_team_insight(
+        self, agent_id: str, content: str, for_agents: list[str] | None = None
+    ) -> None:
         """Push an insight to the team memory board."""
         self.memory.team.push(
             agent_id=agent_id,
@@ -2679,23 +2920,36 @@ class EPTCrew:
         Prioritises: README, config/main entry points, schemas, API routes.
         Falls back to knowledge_base items tagged 'git_repo'.
         """
-        repo_items = [
-            i for i in self.board.knowledge_base
-            if "git_repo" in i.tags
-        ]
+        repo_items = [i for i in self.board.knowledge_base if "git_repo" in i.tags]
         if not repo_items:
             return "(no repo files ingested)"
 
         # Sort by priority: docs first, then code, then data
-        priority = {"document": 0, "api_spec": 1, "schema": 2,
-                    "codebase": 3, "test_case": 4, "data_file": 5}
+        priority = {
+            "document": 0,
+            "api_spec": 1,
+            "schema": 2,
+            "codebase": 3,
+            "test_case": 4,
+            "data_file": 5,
+        }
         repo_items.sort(key=lambda i: priority.get(i.source_type, 9))
 
         # Boost README / main / index / config files to the top
         def _boost_key(item: KnowledgeItem) -> int:
             name = item.label.lower()
-            for i, kw in enumerate(["readme", "main", "index", "app", "config",
-                                     "package.json", "setup.py", "pyproject"]):
+            for i, kw in enumerate(
+                [
+                    "readme",
+                    "main",
+                    "index",
+                    "app",
+                    "config",
+                    "package.json",
+                    "setup.py",
+                    "pyproject",
+                ]
+            ):
                 if kw in name:
                     return i
             return 99
@@ -2731,7 +2985,7 @@ class EPTCrew:
         Called periodically (after each phase) to keep cost/budget up to date.
         Only processes entries not yet tracked (idempotent via _last_cost_idx).
         """
-        start_idx = getattr(self, '_last_cost_idx', 0)
+        start_idx = getattr(self, "_last_cost_idx", 0)
         for entry in self.board.logbook[start_idx:]:
             self.cost_tracker.record_call(
                 model=entry.model_used,
@@ -2765,10 +3019,13 @@ class EPTCrew:
             deferred = f" [{len(entry.deferred_issues)} deferred]" if entry.deferred_issues else ""
             build_outcomes.append(f"  {entry.name}: {status}{rev_note}{deferred}")
 
-        deferred_text = "\n".join(
-            f"  - [{i.severity}] {fname}: {i.description}"
-            for fname, i in self.board.all_deferred[:20]
-        ) or "(none)"
+        deferred_text = (
+            "\n".join(
+                f"  - [{i.severity}] {fname}: {i.description}"
+                for fname, i in self.board.all_deferred[:20]
+            )
+            or "(none)"
+        )
 
         # Stack detection
         stack = "unknown"
@@ -2795,30 +3052,36 @@ class EPTCrew:
             integration_verdict=self.board.integration_verdict,
         )
 
-        self.board.emit(EventType.WRITING, "system",
-                        "🧬 Extracting Project DNA...")
+        self.board.emit(EventType.WRITING, "system", "🧬 Extracting Project DNA...")
         self.ui.flush_events()
 
         scout = AgentRoster.SCOUT
         try:
             resp = scout.think(
-                self.board, task, PROJECT_DNA_SYSTEM, self.client, max_tokens=2048,
+                self.board,
+                task,
+                PROJECT_DNA_SYSTEM,
+                self.client,
+                max_tokens=2048,
             )
             dna = _parse_json(resp)
         except Exception as exc:
             logger.warning("Project DNA parse failed: %s", exc)
-            dna = {"error": str(exc), "raw": resp if 'resp' in dir() else ""}
+            dna = {"error": str(exc), "raw": resp if "resp" in dir() else ""}
 
         # Save to docs
         dna_path = self.board.docs_dir / "project_dna.json"
         atomic_write(dna_path, json.dumps(dna, indent=2, default=str))
-        self.board.emit(EventType.WRITING, "system",
-                        f"🧬 Project DNA saved: {dna_path}")
+        self.board.emit(EventType.WRITING, "system", f"🧬 Project DNA saved: {dna_path}")
         self.ui.flush_events()
 
         # Feed structured lessons into global memory
-        for category in ("stack_patterns", "common_mistakes",
-                         "architecture_lessons", "review_insights"):
+        for category in (
+            "stack_patterns",
+            "common_mistakes",
+            "architecture_lessons",
+            "review_insights",
+        ):
             items = dna.get(category, [])
             if isinstance(items, list):
                 for item in items[:5]:
@@ -2833,6 +3096,9 @@ class EPTCrew:
         self.memory.save_global()
         self.memory.save()
         if new_lessons:
-            self.board.emit(EventType.SPEAKING, "system",
-                            f"🧠 {len(new_lessons)} lessons distilled to global memory")
+            self.board.emit(
+                EventType.SPEAKING,
+                "system",
+                f"🧠 {len(new_lessons)} lessons distilled to global memory",
+            )
             self.ui.flush_events()

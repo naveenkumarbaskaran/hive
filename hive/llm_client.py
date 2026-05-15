@@ -36,6 +36,14 @@ Environment variables:
   LLM_MODEL_SMALL — model for light tasks (default: same as LLM_MODEL)
   LLM_FORMAT      — force format: "anthropic" | "openai" | "auto" (default: auto)
   LLM_FALLBACK_MODELS — comma-separated fallback models for 429 rotation
+
+  Per-tier provider overrides (multi-provider routing):
+  LLM_BASE_URL_FAST     — endpoint for FAST tier (e.g. OpenAI for cheap tasks)
+  LLM_BASE_URL_POWERFUL — endpoint for POWERFUL tier (e.g. Anthropic for reasoning)
+  LLM_API_KEY_FAST      — API key for FAST tier endpoint
+  LLM_API_KEY_POWERFUL  — API key for POWERFUL tier endpoint
+  LLM_FORMAT_FAST       — force format for FAST tier endpoint
+  LLM_FORMAT_POWERFUL   — force format for POWERFUL tier endpoint
 """
 
 from __future__ import annotations
@@ -64,6 +72,7 @@ logger = logging.getLogger("hive.llm")
 # ─────────────────────────────────────────────────────────────────────────────
 #  Thread-safe request pacer — prevents concurrent threads from flooding
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class _RequestPacer:
     """Thread-safe pacer that enforces a minimum interval between LLM requests.
@@ -159,11 +168,13 @@ def _extract_retry_after(exc: Exception) -> float | None:
 #  Model tiers — agents request capability, not a specific model
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class ModelTier(str, Enum):
     """Capability tiers that agents request. Resolved to concrete models at runtime."""
-    FAST      = "fast"       # classification, short JSON, quick checks
-    BALANCED  = "balanced"   # PRD writing, moderate reasoning, summaries
-    POWERFUL  = "powerful"   # architecture, code generation, deep reasoning
+
+    FAST = "fast"  # classification, short JSON, quick checks
+    BALANCED = "balanced"  # PRD writing, moderate reasoning, summaries
+    POWERFUL = "powerful"  # architecture, code generation, deep reasoning
 
     def escalate(self) -> ModelTier:
         """Bump to the next tier (e.g., after a failed attempt)."""
@@ -176,9 +187,11 @@ class ModelTier(str, Enum):
 #  Response wrapper
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class LLMResponse:
     """Unified response from any backend."""
+
     text: str = ""
     model: str = ""
     input_tokens: int = 0
@@ -188,21 +201,22 @@ class LLMResponse:
     stop_reason: str = ""
     raw: Any = None
     # ── Resilience metadata ──
-    tier_requested: str = ""           # tier the caller asked for
-    tier_used: str = ""                # tier actually used (may be escalated)
-    model_requested: str = ""          # model resolved from requested tier
-    retries: int = 0                   # how many retries before success
-    tier_escalated: bool = False       # was tier bumped?
-    thinking_stripped: bool = False     # was thinking removed on fallback?
-    model_switched: bool = False       # was model switched due to rate limit?
-    model_used: str = ""               # actual model used (may differ from requested)
+    tier_requested: str = ""  # tier the caller asked for
+    tier_used: str = ""  # tier actually used (may be escalated)
+    model_requested: str = ""  # model resolved from requested tier
+    retries: int = 0  # how many retries before success
+    tier_escalated: bool = False  # was tier bumped?
+    thinking_stripped: bool = False  # was thinking removed on fallback?
+    model_switched: bool = False  # was model switched due to rate limit?
+    model_used: str = ""  # actual model used (may differ from requested)
     errors: list[str] = field(default_factory=list)  # error msgs from failed attempts
-    duration_s: float = 0.0            # wall-clock seconds
+    duration_s: float = 0.0  # wall-clock seconds
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Client
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class LLMClient:
     """
@@ -210,9 +224,9 @@ class LLMClient:
     no code changes needed.
     """
 
-    ANTHROPIC_NATIVE = "anthropic"       # direct Anthropic SDK (streaming, thinking, cache)
-    ANTHROPIC_PROXY  = "anthropic_proxy"  # /anthropic/v1/messages (Hyperspace / LiteLLM)
-    OPENAI_COMPAT    = "openai"           # /v1/chat/completions
+    ANTHROPIC_NATIVE = "anthropic"  # direct Anthropic SDK (streaming, thinking, cache)
+    ANTHROPIC_PROXY = "anthropic_proxy"  # /anthropic/v1/messages (Hyperspace / LiteLLM)
+    OPENAI_COMPAT = "openai"  # /v1/chat/completions
 
     def __init__(
         self,
@@ -223,7 +237,9 @@ class LLMClient:
         model_small: str | None = None,
         api_format: str | None = None,
     ):
-        self.base_url = (base_url or os.getenv("LLM_BASE_URL", "https://api.anthropic.com")).rstrip("/")
+        self.base_url = (base_url or os.getenv("LLM_BASE_URL", "https://api.anthropic.com")).rstrip(
+            "/"
+        )
         self.api_key = api_key or os.getenv("LLM_API_KEY", "")
         self.default_model = default_model or os.getenv("LLM_MODEL", "claude-sonnet-4-20250514")
         self.model_big = model_big or os.getenv("LLM_MODEL_BIG", "") or self.default_model
@@ -235,6 +251,26 @@ class LLMClient:
             self._format = None  # auto = run detection
         self._anthropic_client: Any = None  # lazy-loaded SDK client
         self._pacer = _RequestPacer(int(os.getenv("HIVE_REQUEST_PACE_MS", "200")))
+
+        # ── Per-tier provider overrides ──────────────────────────────────
+        # Allow different providers per tier: LLM_BASE_URL_FAST, LLM_API_KEY_BIG, etc.
+        self._tier_config: dict[str, dict[str, str]] = {}
+        for tier_name in ("fast", "balanced", "powerful"):
+            suffix = f"_{tier_name.upper()}"
+            tier_url = os.getenv(f"LLM_BASE_URL{suffix}", "")
+            tier_key = os.getenv(f"LLM_API_KEY{suffix}", "")
+            tier_fmt = os.getenv(f"LLM_FORMAT{suffix}", "")
+            if tier_url or tier_key:
+                self._tier_config[tier_name] = {
+                    "base_url": tier_url.rstrip("/") if tier_url else self.base_url,
+                    "api_key": tier_key or self.api_key,
+                    "format": tier_fmt.lower() if tier_fmt else "",
+                }
+
+        # Thread-local for per-call endpoint overrides (thread-safe multi-provider)
+        self._local = threading.local()
+        # Cache detected formats per-URL so multi-provider doesn't re-probe
+        self._format_cache: dict[str, str] = {}
 
     # ── Fallback model helpers ─────────────────────────────────────────────────
 
@@ -272,17 +308,52 @@ class LLMClient:
             return exc.response.status_code == 429
         # Also catch stringified 429 from proxies — word boundary avoids
         # false positives on port numbers like 4290 or ticket IDs like #4291.
-        return bool(re.search(r'\b429\b', str(exc)[:80]))
+        return bool(re.search(r"\b429\b", str(exc)[:80]))
+
+    @property
+    def _effective_url(self) -> str:
+        """Thread-local base URL override, or the default."""
+        return getattr(self._local, "url", None) or self.base_url
+
+    @property
+    def _effective_key(self) -> str:
+        """Thread-local API key override, or the default."""
+        return getattr(self._local, "key", None) or self.api_key
+
+    def _set_effective_endpoint(self, url: str, key: str) -> None:
+        """Set thread-local endpoint for the current call."""
+        self._local.url = url
+        self._local.key = key
+
+    def _clear_effective_endpoint(self) -> None:
+        """Clear thread-local endpoint after a call."""
+        self._local.url = None
+        self._local.key = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def resolve_model(self, tier: ModelTier) -> str:
         """Resolve a capability tier to a concrete model name."""
         return {
-            ModelTier.FAST:     self.model_small,
+            ModelTier.FAST: self.model_small,
             ModelTier.BALANCED: self.default_model,
             ModelTier.POWERFUL: self.model_big,
         }[tier]
+
+    def resolve_endpoint(self, tier: ModelTier) -> tuple[str, str, str | None]:
+        """Resolve a tier to its ``(base_url, api_key, format_hint)``.
+
+        Per-tier overrides are read from ``LLM_BASE_URL_FAST``,
+        ``LLM_API_KEY_POWERFUL``, ``LLM_FORMAT_BALANCED``, etc.
+        Falls back to the default endpoint when no override is set.
+        """
+        cfg = self._tier_config.get(tier.value)
+        if cfg:
+            fmt = cfg["format"] or None
+            if fmt == "auto":
+                fmt = None
+            return cfg["base_url"], cfg["api_key"], fmt
+        return self.base_url, self.api_key, None
 
     def chat(
         self,
@@ -321,13 +392,20 @@ class LLMClient:
           model_used, errors, duration_s.
         """
         t0 = time.time()
-        fmt = self._detect_format()
 
         requested_tier = tier or ModelTier.BALANCED
         current_tier = requested_tier
         original_model = model or self.resolve_model(requested_tier)
         current_model = original_model
         current_thinking = thinking
+
+        # Resolve per-tier endpoint (may differ from default)
+        tier_url, tier_key, tier_fmt_hint = self.resolve_endpoint(current_tier)
+        self._set_effective_endpoint(tier_url, tier_key)
+        try:
+            fmt = self._detect_format(url_override=tier_url, fmt_override=tier_fmt_hint)
+        finally:
+            self._clear_effective_endpoint()
 
         if cache_control_msgs and fmt in (self.ANTHROPIC_NATIVE, self.ANTHROPIC_PROXY):
             messages = self._inject_cache_control(messages)
@@ -340,32 +418,47 @@ class LLMClient:
         # Build a rotation pool for 429 rate-limit scenarios
         model_pool = self._build_model_pool(original_model)
         rate_limited_models: set[str] = set()
-        if len(model_pool) <= 1 and not getattr(self, '_single_model_warned', False):
+        if len(model_pool) <= 1 and not getattr(self, "_single_model_warned", False):
             self._single_model_warned = True
             logger.warning(
-                "Model pool has only 1 model (%s). "
-                "Set LLM_FALLBACK_MODELS for 429 rotation.",
+                "Model pool has only 1 model (%s). Set LLM_FALLBACK_MODELS for 429 rotation.",
                 model_pool[0] if model_pool else "none",
             )
-            print("  [LLM] ⚠️ Single-model pool — 429 rotation disabled. "
-                  "Set LLM_FALLBACK_MODELS for resilience.")
+            print(
+                "  [LLM] ⚠️ Single-model pool — 429 rotation disabled. "
+                "Set LLM_FALLBACK_MODELS for resilience."
+            )
 
         for attempt in range(1, retries + 1):
             self._pacer.pace()
+            # Set thread-local endpoint for this attempt (supports multi-provider)
+            self._set_effective_endpoint(tier_url, tier_key)
             try:
                 if fmt == self.ANTHROPIC_NATIVE:
-                    resp = self._chat_anthropic_sdk(system, messages, current_model,
-                                                   temperature, max_tokens, current_thinking,
-                                                   on_token=on_token)
+                    resp = self._chat_anthropic_sdk(
+                        system,
+                        messages,
+                        current_model,
+                        temperature,
+                        max_tokens,
+                        current_thinking,
+                        on_token=on_token,
+                    )
                 elif fmt == self.ANTHROPIC_PROXY:
-                    resp = self._chat_anthropic_http(system, messages, current_model,
-                                                    temperature, max_tokens, current_thinking,
-                                                    path_prefix="/anthropic",
-                                                    on_token=on_token)
+                    resp = self._chat_anthropic_http(
+                        system,
+                        messages,
+                        current_model,
+                        temperature,
+                        max_tokens,
+                        current_thinking,
+                        path_prefix="/anthropic",
+                        on_token=on_token,
+                    )
                 else:
-                    resp = self._chat_openai(system, messages, current_model,
-                                            temperature, max_tokens,
-                                            on_token=on_token)
+                    resp = self._chat_openai(
+                        system, messages, current_model, temperature, max_tokens, on_token=on_token
+                    )
 
                 # Success — attach resilience metadata
                 resp.tier_requested = requested_tier.value
@@ -379,11 +472,16 @@ class LLMClient:
                 resp.errors = errors
                 resp.duration_s = time.time() - t0
                 if model_switched:
-                    logger.info("Succeeded with fallback model %s (originally %s)",
-                                current_model, original_model)
+                    logger.info(
+                        "Succeeded with fallback model %s (originally %s)",
+                        current_model,
+                        original_model,
+                    )
+                self._clear_effective_endpoint()
                 return resp
 
             except Exception as exc:
+                self._clear_effective_endpoint()
                 err_msg = f"{exc.__class__.__name__}: {str(exc)[:200]}"
                 errors.append(err_msg)
                 logger.warning("LLM attempt %d/%d failed: %s", attempt, retries, err_msg)
@@ -408,8 +506,11 @@ class LLMClient:
                             wait = min(retry_after, 60.0)
                         else:
                             wait = random.uniform(0.5, 2.0)
-                        logger.info("Rate-limited on %s, switching to %s",
-                                    rate_limited_models, current_model)
+                        logger.info(
+                            "Rate-limited on %s, switching to %s",
+                            rate_limited_models,
+                            current_model,
+                        )
                         print(f"  [LLM fallback] rate-limited, switching to model: {current_model}")
                     else:
                         # All models in pool are rate-limited — reset and wait longer
@@ -420,8 +521,12 @@ class LLMClient:
                             # Longer base when pool is single-model (no rotation benefit)
                             base = 3.0 if len(model_pool) <= 1 else 2.0
                             wait = _backoff_wait(attempt, base=base, max_wait=45.0)
-                        logger.info("All models rate-limited, resetting pool and waiting %.1fs", wait)
-                        print(f"  [LLM fallback] all models rate-limited, waiting {wait:.1f}s before retrying")
+                        logger.info(
+                            "All models rate-limited, resetting pool and waiting %.1fs", wait
+                        )
+                        print(
+                            f"  [LLM fallback] all models rate-limited, waiting {wait:.1f}s before retrying"
+                        )
                     # Feed Retry-After into the pacer so subsequent requests
                     # are spaced at least that far apart.
                     if retry_after and retry_after > 0:
@@ -445,10 +550,24 @@ class LLMClient:
                         if escalated_model not in rate_limited_models:
                             current_model = escalated_model
                         tier_escalated = True
-                        logger.info("Escalating tier %s→%s (model: %s)",
-                                   prev_tier.value, current_tier.value, current_model)
-                        print(f"  [LLM fallback] escalating tier {prev_tier.value}→{current_tier.value} "
-                              f"(model: {current_model})")
+                        # Re-resolve endpoint for the escalated tier (may route
+                        # to a different provider, e.g. FAST→OpenAI, POWERFUL→Anthropic)
+                        tier_url, tier_key, tier_fmt_hint = self.resolve_endpoint(current_tier)
+                        new_fmt = self._detect_format(
+                            url_override=tier_url, fmt_override=tier_fmt_hint
+                        )
+                        if new_fmt != fmt:
+                            fmt = new_fmt
+                        logger.info(
+                            "Escalating tier %s→%s (model: %s)",
+                            prev_tier.value,
+                            current_tier.value,
+                            current_model,
+                        )
+                        print(
+                            f"  [LLM fallback] escalating tier {prev_tier.value}→{current_tier.value} "
+                            f"(model: {current_model})"
+                        )
 
                 logger.debug("Backing off %.1fs before retry", wait)
                 time.sleep(wait)
@@ -457,95 +576,158 @@ class LLMClient:
 
     # ── Format detection ──────────────────────────────────────────────────────
 
-    def _detect_format(self) -> str:
+    def _detect_format(
+        self,
+        url_override: str | None = None,
+        fmt_override: str | None = None,
+    ) -> str:
         """Auto-detect API format by probing the endpoint. Cached after first call.
+
+        When *url_override* or *fmt_override* are provided (per-tier routing),
+        the detection runs against that URL and the result is cached in
+        ``self._format_cache[url]`` rather than the global ``self._format``.
 
         Results are persisted to disk so subsequent runs don't make network
         probe calls again.
         """
-        if self._format:
+        probe_url = url_override or self.base_url
+        probe_key = self._effective_key
+
+        # If a per-tier format was explicitly set, return it directly
+        if fmt_override:
+            mapped = {
+                "anthropic": self.ANTHROPIC_NATIVE,
+                "anthropic_proxy": self.ANTHROPIC_PROXY,
+                "openai": self.OPENAI_COMPAT,
+            }.get(fmt_override, fmt_override)
+            self._format_cache[probe_url] = mapped
+            return mapped
+
+        # Check in-memory cache for this URL
+        if probe_url in self._format_cache:
+            return self._format_cache[probe_url]
+
+        # For the default URL, check the original cached format
+        if probe_url == self.base_url and self._format:
             return self._format
 
         # If it's the official Anthropic endpoint, use the SDK
-        if "api.anthropic.com" in self.base_url:
-            self._format = self.ANTHROPIC_NATIVE
-            return self._format
+        if "api.anthropic.com" in probe_url:
+            detected = self.ANTHROPIC_NATIVE
+            self._format_cache[probe_url] = detected
+            if probe_url == self.base_url:
+                self._format = detected
+            return detected
 
         # Try loading cached format from disk
         cache_file = Path.home() / ".ept" / "format_cache.json"
         if cache_file.exists():
             try:
                 cache = json.loads(cache_file.read_text())
-                if cache.get("base_url") == self.base_url:
-                    self._format = cache["format"]
-                    logger.debug("Loaded cached format: %s", self._format)
-                    return self._format
+                if cache.get("base_url") == probe_url:
+                    detected = cache["format"]
+                    self._format_cache[probe_url] = detected
+                    if probe_url == self.base_url:
+                        self._format = detected
+                    logger.debug("Loaded cached format: %s", detected)
+                    return detected
             except Exception:
                 pass
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "x-api-key": self.api_key,
+            "Authorization": f"Bearer {probe_key}",
+            "x-api-key": probe_key,
         }
 
         # Probe 1: OpenAI /v1/models
         try:
-            resp = httpx.get(f"{self.base_url}/v1/models", headers=headers, timeout=5)
+            resp = httpx.get(f"{probe_url}/v1/models", headers=headers, timeout=5)
             if resp.status_code == 200:
-                self._format = self.OPENAI_COMPAT
+                detected = self.OPENAI_COMPAT
                 print("  [llm_client] detected OpenAI-compatible endpoint")
-                self._save_format_cache()
-                return self._format
+                self._format_cache[probe_url] = detected
+                if probe_url == self.base_url:
+                    self._format = detected
+                self._save_format_cache(probe_url, detected)
+                return detected
         except Exception:
             pass
 
         # Probe 2: Anthropic behind /anthropic prefix (Hyperspace / LiteLLM)
         try:
             resp = httpx.post(
-                f"{self.base_url}/anthropic/v1/messages",
-                headers={**headers, "Content-Type": "application/json", "anthropic-version": "2023-06-01"},
-                json={"model": self.default_model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+                f"{probe_url}/anthropic/v1/messages",
+                headers={
+                    **headers,
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": self.default_model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                },
                 timeout=5,
             )
             if resp.status_code in (200, 400, 401, 429):
-                self._format = self.ANTHROPIC_PROXY
+                detected = self.ANTHROPIC_PROXY
                 print("  [llm_client] detected Anthropic proxy endpoint (/anthropic/v1/messages)")
-                self._save_format_cache()
-                return self._format
+                self._format_cache[probe_url] = detected
+                if probe_url == self.base_url:
+                    self._format = detected
+                self._save_format_cache(probe_url, detected)
+                return detected
         except Exception:
             pass
 
         # Probe 3: Plain Anthropic /v1/messages
         try:
             resp = httpx.post(
-                f"{self.base_url}/v1/messages",
-                headers={**headers, "Content-Type": "application/json", "anthropic-version": "2023-06-01"},
-                json={"model": self.default_model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+                f"{probe_url}/v1/messages",
+                headers={
+                    **headers,
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": self.default_model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                },
                 timeout=5,
             )
             if resp.status_code in (200, 400, 401, 429):
-                self._format = self.ANTHROPIC_NATIVE
+                detected = self.ANTHROPIC_NATIVE
                 print("  [llm_client] detected Anthropic native endpoint (/v1/messages)")
-                self._save_format_cache()
-                return self._format
+                self._format_cache[probe_url] = detected
+                if probe_url == self.base_url:
+                    self._format = detected
+                self._save_format_cache(probe_url, detected)
+                return detected
         except Exception:
             pass
 
         # Default fallback
-        self._format = self.ANTHROPIC_PROXY
+        detected = self.ANTHROPIC_PROXY
         print("  [llm_client] defaulting to Anthropic proxy format")
+        self._format_cache[probe_url] = detected
+        if probe_url == self.base_url:
+            self._format = detected
+        self._save_format_cache(probe_url, detected)
+        return detected
 
-        # Persist detected format to disk cache
-        self._save_format_cache()
-        return self._format
-
-    def _save_format_cache(self) -> None:
+    def _save_format_cache(self, url: str | None = None, fmt: str | None = None) -> None:
         """Persist detected format to disk so subsequent runs skip probes."""
         try:
             cache_file = Path.home() / ".ept" / "format_cache.json"
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             # Write atomically via temp-file + rename
-            content = json.dumps({"base_url": self.base_url, "format": self._format})
+            content = json.dumps(
+                {
+                    "base_url": url or self.base_url,
+                    "format": fmt or self._format,
+                }
+            )
             tmp = str(cache_file) + ".tmp"
             Path(tmp).write_text(content)
             os.replace(tmp, cache_file)
@@ -555,17 +737,36 @@ class LLMClient:
     # ── Anthropic SDK (native — streaming + thinking + prompt caching) ────────
 
     def _get_anthropic_client(self):
-        if self._anthropic_client is None:
+        """Return a cached Anthropic SDK client for the current effective URL."""
+        # Backward compat: tests may set _anthropic_client directly
+        legacy = getattr(self, "_anthropic_client", None)
+        if legacy is not None:
+            return legacy
+
+        url = self._effective_url
+        key = self._effective_key
+        cache_key = f"{url}|{key[:8]}"  # cache per endpoint+key prefix
+        if not hasattr(self, "_sdk_clients"):
+            self._sdk_clients: dict[str, Any] = {}
+        if cache_key not in self._sdk_clients:
             import anthropic
-            self._anthropic_client = anthropic.Anthropic(
-                base_url=self.base_url if "api.anthropic.com" not in self.base_url else None,
-                api_key=self.api_key or None,
+
+            self._sdk_clients[cache_key] = anthropic.Anthropic(
+                base_url=url if "api.anthropic.com" not in url else None,
+                api_key=key or None,
             )
-        return self._anthropic_client
+        return self._sdk_clients[cache_key]
 
     def _chat_anthropic_sdk(
-        self, system, messages, model, temperature, max_tokens, thinking,
-        *, on_token: Callable[[str], None] | None = None,
+        self,
+        system,
+        messages,
+        model,
+        temperature,
+        max_tokens,
+        thinking,
+        *,
+        on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         client = self._get_anthropic_client()
         kwargs: dict[str, Any] = {
@@ -614,13 +815,22 @@ class LLMClient:
     # ── Anthropic HTTP (proxy — no SDK, plain httpx) ─────────────────────────
 
     def _chat_anthropic_http(
-        self, system, messages, model, temperature, max_tokens, thinking,
+        self,
+        system,
+        messages,
+        model,
+        temperature,
+        max_tokens,
+        thinking,
         path_prefix: str = "",
-        *, on_token: Callable[[str], None] | None = None,
+        *,
+        on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
+        url = self._effective_url
+        key = self._effective_key
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "x-api-key": self.api_key,
+            "Authorization": f"Bearer {key}",
+            "x-api-key": key,
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01",
         }
@@ -639,12 +849,10 @@ class LLMClient:
         # Enable SSE streaming when on_token callback is provided
         if on_token:
             payload["stream"] = True
-            return self._stream_anthropic_http(
-                headers, payload, model, path_prefix, on_token
-            )
+            return self._stream_anthropic_http(headers, payload, model, path_prefix, on_token, url)
 
         resp = httpx.post(
-            f"{self.base_url}{path_prefix}/v1/messages",
+            f"{url}{path_prefix}/v1/messages",
             headers=headers,
             json=payload,
             timeout=self.http_timeout,
@@ -656,7 +864,7 @@ class LLMClient:
             del payload["thinking"]
             payload["temperature"] = 0
             resp = httpx.post(
-                f"{self.base_url}{path_prefix}/v1/messages",
+                f"{url}{path_prefix}/v1/messages",
                 headers=headers,
                 json=payload,
                 timeout=self.http_timeout,
@@ -697,8 +905,10 @@ class LLMClient:
         model: str,
         path_prefix: str,
         on_token: Callable[[str], None],
+        base_url: str | None = None,
     ) -> LLMResponse:
         """Stream Anthropic HTTP SSE and invoke on_token for each text delta."""
+        url = base_url or self._effective_url
         collected: list[str] = []
         input_tokens = 0
         output_tokens = 0
@@ -708,7 +918,7 @@ class LLMClient:
 
         with httpx.stream(
             "POST",
-            f"{self.base_url}{path_prefix}/v1/messages",
+            f"{url}{path_prefix}/v1/messages",
             headers=headers,
             json=payload,
             timeout=self.http_timeout,
@@ -763,11 +973,19 @@ class LLMClient:
     # ── OpenAI-compatible HTTP ────────────────────────────────────────────────
 
     def _chat_openai(
-        self, system, messages, model, temperature, max_tokens,
-        *, on_token: Callable[[str], None] | None = None,
+        self,
+        system,
+        messages,
+        model,
+        temperature,
+        max_tokens,
+        *,
+        on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
+        url = self._effective_url
+        key = self._effective_key
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         }
 
@@ -794,10 +1012,10 @@ class LLMClient:
         # Enable SSE streaming when on_token callback is provided
         if on_token:
             payload["stream"] = True
-            return self._stream_openai(headers, payload, model, on_token)
+            return self._stream_openai(headers, payload, model, on_token, url)
 
         resp = httpx.post(
-            f"{self.base_url}/v1/chat/completions",
+            f"{url}/v1/chat/completions",
             headers=headers,
             json=payload,
             timeout=self.http_timeout,
@@ -824,14 +1042,16 @@ class LLMClient:
         payload: dict[str, Any],
         model: str,
         on_token: Callable[[str], None],
+        base_url: str | None = None,
     ) -> LLMResponse:
         """Stream OpenAI-compatible SSE and invoke on_token for each delta."""
+        url = base_url or self._effective_url
         collected: list[str] = []
         stop_reason = ""
 
         with httpx.stream(
             "POST",
-            f"{self.base_url}/v1/chat/completions",
+            f"{url}/v1/chat/completions",
             headers=headers,
             json=payload,
             timeout=self.http_timeout,
@@ -881,8 +1101,9 @@ class LLMClient:
         last = msgs[-1]
         content = last.get("content", "")
         if isinstance(content, str):
-            last["content"] = [{"type": "text", "text": content,
-                                "cache_control": {"type": "ephemeral"}}]
+            last["content"] = [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            ]
         elif isinstance(content, list) and content:
             if isinstance(content[-1], dict):
                 content[-1]["cache_control"] = {"type": "ephemeral"}
@@ -895,9 +1116,15 @@ class LLMClient:
         return self._format or "not detected yet"
 
     def __repr__(self) -> str:
-        return (f"LLMClient(base_url={self.base_url!r}, model={self.default_model!r}, "
-                f"big={self.model_big!r}, small={self.model_small!r}, "
-                f"format={self.format_name!r})")
+        tier_info = ""
+        if self._tier_config:
+            tiers = ", ".join(self._tier_config.keys())
+            tier_info = f", tier_overrides=[{tiers}]"
+        return (
+            f"LLMClient(base_url={self.base_url!r}, model={self.default_model!r}, "
+            f"big={self.model_big!r}, small={self.model_small!r}, "
+            f"format={self.format_name!r}{tier_info})"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

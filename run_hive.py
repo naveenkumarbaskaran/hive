@@ -47,6 +47,19 @@ from hive.memory import MemoryManager
 from hive.state import list_projects, load_checkpoint
 
 
+def _start_dashboard(crew: EPTCrew, port: int) -> object | None:
+    """Start the live dashboard if requested. Returns the server (or None)."""
+    try:
+        from hive.dashboard import DashboardServer
+
+        ds = DashboardServer(crew.board, crew.cost_tracker, port=port)
+        ds.start()
+        return ds
+    except Exception as exc:
+        print(f"  ⚠️  Dashboard failed to start: {exc}")
+        return None
+
+
 def main() -> None:
     from hive import __version__
 
@@ -59,21 +72,51 @@ def main() -> None:
     parser.add_argument("--resume", metavar="PATH", help="Resume from checkpoint JSON")
     parser.add_argument("--list-projects", action="store_true", help="List existing projects")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    parser.add_argument("--auto", action="store_true",
-                        help="Auto-approve all sign-offs (for testing)")
-    parser.add_argument("--attach", action="append", default=[],
-                        metavar="PATH",
-                        help="Attach knowledge files/folders (repeatable)")
-    parser.add_argument("--repo", action="append", default=[],
-                        metavar="URL",
-                        help="Clone & study a git repo as reference (repeatable)")
-    parser.add_argument("--plugin", action="append", default=[],
-                        metavar="PATH",
-                        help="Load a plugin module or package (repeatable)")
-    parser.add_argument("--log-level", metavar="LEVEL", default=None,
-                        help="Log level: DEBUG, INFO, WARNING, ERROR (default: WARNING)")
-    parser.add_argument("--version", action="version",
-                        version=f"%(prog)s {__version__} (Hive)")
+    parser.add_argument(
+        "--auto", action="store_true", help="Auto-approve all sign-offs (for testing)"
+    )
+    parser.add_argument(
+        "--interactive", action="store_true", help="Preview & steer each file during build phase"
+    )
+    parser.add_argument(
+        "--dashboard",
+        nargs="?",
+        const="8765",
+        default=None,
+        metavar="PORT",
+        help="Start live web dashboard (default port: 8765)",
+    )
+    parser.add_argument(
+        "--modify", metavar="PATH", help="Brownfield mode: modify an existing codebase at PATH"
+    )
+    parser.add_argument(
+        "--attach",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Attach knowledge files/folders (repeatable)",
+    )
+    parser.add_argument(
+        "--repo",
+        action="append",
+        default=[],
+        metavar="URL",
+        help="Clone & study a git repo as reference (repeatable)",
+    )
+    parser.add_argument(
+        "--plugin",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Load a plugin module or package (repeatable)",
+    )
+    parser.add_argument(
+        "--log-level",
+        metavar="LEVEL",
+        default=None,
+        help="Log level: DEBUG, INFO, WARNING, ERROR (default: WARNING)",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__} (Hive)")
 
     args = parser.parse_args()
 
@@ -103,6 +146,7 @@ def main() -> None:
             attach_paths=args.attach,
             repo_urls=args.repo,
             plugin_paths=args.plugin or None,
+            interactive=args.interactive,
         )
         crew.board = board
         crew.ui.board = board  # sync UI with restored board
@@ -116,6 +160,7 @@ def main() -> None:
         # Rehydrate crew agents if the crew phase was already completed
         if "crew" in board.completed_phases:
             from hive.agents import AgentRoster
+
             crew.agents = AgentRoster.compose(
                 has_frontend=board.research.has_frontend,
                 dev_count=board.dev_count or 1,
@@ -123,7 +168,12 @@ def main() -> None:
         print(f"Resuming project: {board.feature}")
         print(f"Last phase: {board.current_phase}")
         print(f"Completed: {', '.join(board.completed_phases)}")
-        crew.run()
+        ds = _start_dashboard(crew, int(args.dashboard)) if args.dashboard else None
+        try:
+            crew.run()
+        finally:
+            if ds:
+                ds.stop()
         return
 
     # ── New project ──
@@ -132,16 +182,31 @@ def main() -> None:
         print("\n  Error: provide a feature request or --resume/--list-projects")
         sys.exit(1)
 
+    # Brownfield: --modify PATH auto-attaches the codebase
+    attach = list(args.attach)
+    modify_path = args.modify
+    if modify_path:
+        resolved = str(Path(modify_path).resolve())
+        if resolved not in attach:
+            attach.append(resolved)
+
     crew = EPTCrew(
         feature=args.feature,
         client=llm,
         verbose=args.verbose,
         auto_approve=args.auto,
-        attach_paths=args.attach,
+        attach_paths=attach,
         repo_urls=args.repo,
         plugin_paths=args.plugin or None,
+        interactive=args.interactive,
+        modify_path=modify_path,
     )
-    crew.run()
+    ds = _start_dashboard(crew, int(args.dashboard)) if args.dashboard else None
+    try:
+        crew.run()
+    finally:
+        if ds:
+            ds.stop()
 
 
 if __name__ == "__main__":

@@ -54,33 +54,34 @@ logger = logging.getLogger("hive.state")
 #  Events — the communication bus
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class EventType(str, Enum):
-    WELCOME       = "welcome"
-    THINKING      = "thinking"
-    SPEAKING      = "speaking"
-    HANDSHAKE     = "handshake"       # agent-to-agent negotiation
-    AGREEMENT     = "agreement"
-    DISAGREEMENT  = "disagreement"
-    WRITING       = "writing"         # agent producing an artifact
-    REVIEWING     = "reviewing"
-    VERDICT       = "verdict"
-    CHECKPOINT    = "checkpoint"
-    USER_INPUT    = "user_input"
-    USER_SIGNOFF  = "user_signoff"    # user approved an artifact
-    CREW_FORMED   = "crew_formed"
-    PHASE_START   = "phase_start"
-    PHASE_END     = "phase_end"
-    ESCALATION    = "escalation"
-    LLM_INCIDENT  = "llm_incident"    # retry, fallback, model switch
-    ERROR         = "error"
+    WELCOME = "welcome"
+    THINKING = "thinking"
+    SPEAKING = "speaking"
+    HANDSHAKE = "handshake"  # agent-to-agent negotiation
+    AGREEMENT = "agreement"
+    DISAGREEMENT = "disagreement"
+    WRITING = "writing"  # agent producing an artifact
+    REVIEWING = "reviewing"
+    VERDICT = "verdict"
+    CHECKPOINT = "checkpoint"
+    USER_INPUT = "user_input"
+    USER_SIGNOFF = "user_signoff"  # user approved an artifact
+    CREW_FORMED = "crew_formed"
+    PHASE_START = "phase_start"
+    PHASE_END = "phase_end"
+    ESCALATION = "escalation"
+    LLM_INCIDENT = "llm_incident"  # retry, fallback, model switch
+    ERROR = "error"
 
 
 @dataclass
 class Event:
     type: EventType
-    agent: str              # agent id (e.g. "penny", "archie")
-    content: str            # main text
-    target: str = ""        # target agent or file
+    agent: str  # agent id (e.g. "penny", "archie")
+    content: str  # main text
+    target: str = ""  # target agent or file
     metadata: dict = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
 
@@ -88,6 +89,7 @@ class Event:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Research Context
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ResearchContext:
@@ -121,18 +123,20 @@ class ResearchContext:
 #  User Profile — captured at welcome/intake
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class UserProfile:
     """User identity and context gathered during the welcome/intake phase."""
-    name: str = ""                      # user's display name
-    role: str = ""                      # e.g. "Product Owner", "Developer"
-    company: str = ""                   # optional company/org
-    is_request_for_self: bool = True    # is the feature for this user or someone else?
-    end_user_name: str = ""             # if for someone else — who?
-    end_user_role: str = ""             # e.g. "Customer Service Agent"
-    end_user_description: str = ""      # additional context about the end user
-    as_is_process: str = ""             # how the user currently does things (before this feature)
-    additional_context: str = ""        # any extra notes the user offered
+
+    name: str = ""  # user's display name
+    role: str = ""  # e.g. "Product Owner", "Developer"
+    company: str = ""  # optional company/org
+    is_request_for_self: bool = True  # is the feature for this user or someone else?
+    end_user_name: str = ""  # if for someone else — who?
+    end_user_role: str = ""  # e.g. "Customer Service Agent"
+    end_user_description: str = ""  # additional context about the end user
+    as_is_process: str = ""  # how the user currently does things (before this feature)
+    additional_context: str = ""  # any extra notes the user offered
 
     def as_block(self) -> str:
         """Render as a context block for prompts."""
@@ -167,26 +171,28 @@ class UserProfile:
 #  Logbook — persistent record of every agent interaction
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class LogEntry:
     """One agent↔LLM interaction, recorded in the project Logbook."""
-    agent_id: str                        # "scout", "penny", "dev_1"
-    agent_name: str                      # "Scout", "Penny"
-    phase: str                           # current_phase at call time
-    task_summary: str                    # first 120 chars of the task
-    model_requested: str                 # tier or explicit model name
-    model_used: str                      # actual model that responded
-    tier_requested: str                  # "fast" | "balanced" | "powerful"
-    tier_used: str                       # may differ if escalated
+
+    agent_id: str  # "scout", "penny", "dev_1"
+    agent_name: str  # "Scout", "Penny"
+    phase: str  # current_phase at call time
+    task_summary: str  # first 120 chars of the task
+    model_requested: str  # tier or explicit model name
+    model_used: str  # actual model that responded
+    tier_requested: str  # "fast" | "balanced" | "powerful"
+    tier_used: str  # may differ if escalated
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
-    duration_s: float = 0.0              # wall-clock seconds
-    retries: int = 0                     # how many retries before success
-    tier_escalated: bool = False         # was the tier bumped up?
-    thinking_stripped: bool = False      # was thinking param removed?
+    duration_s: float = 0.0  # wall-clock seconds
+    retries: int = 0  # how many retries before success
+    tier_escalated: bool = False  # was the tier bumped up?
+    thinking_stripped: bool = False  # was thinking param removed?
     errors: list[str] = field(default_factory=list)  # error msgs from failed attempts
-    response_preview: str = ""           # first 200 chars of response
+    response_preview: str = ""  # first 200 chars of response
     timestamp: float = field(default_factory=time.time)
     success: bool = True
 
@@ -194,6 +200,7 @@ class LogEntry:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Artifacts and tracking
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class Issue:
@@ -213,7 +220,7 @@ class FileEntry:
     is_frontend: bool = False
     deferred_issues: list[Issue] = field(default_factory=list)
     assigned_dev: str = ""  # which dev agent built this
-    test_output: str = ""   # last pytest output (from test execution feedback loop)
+    test_output: str = ""  # last pytest output (from test execution feedback loop)
 
 
 @dataclass
@@ -226,11 +233,12 @@ class Amendment:
 @dataclass
 class SignOff:
     """Feature-level user sign-off on an artifact."""
-    artifact: str       # "prd" | "architecture" | "contract" | "crew"
-    version: int        # increments on changes
+
+    artifact: str  # "prd" | "architecture" | "contract" | "crew"
+    version: int  # increments on changes
     approved: bool
     feedback: str = ""  # user's comments
-    produced_by: str = ""              # "Scout 🔍 (Research Analyst)" — who created it
+    produced_by: str = ""  # "Scout 🔍 (Research Analyst)" — who created it
     reviewed_by: list[str] = field(default_factory=list)  # agents who reviewed/contributed
     timestamp: float = field(default_factory=time.time)
 
@@ -258,7 +266,7 @@ class Blackboard:
     research: ResearchContext = field(default_factory=ResearchContext)
 
     # ── Reference repo analysis ──
-    repo_analysis: str = ""            # Scout's deep study of a reference repo
+    repo_analysis: str = ""  # Scout's deep study of a reference repo
     repo_urls: list[str] = field(default_factory=list)  # git URLs the user provided
 
     # ── Interviews ──
@@ -285,9 +293,9 @@ class Blackboard:
 
     # ── Verdicts ──
     integration_verdict: str = ""
-    integration_notes: str = ""   # Quinn's detailed findings
+    integration_notes: str = ""  # Quinn's detailed findings
     release_verdict: str = ""
-    pii_report: str = ""          # PII/security scan results
+    pii_report: str = ""  # PII/security scan results
 
     # ── Test documentation ──
     uat_doc: str = ""
@@ -311,7 +319,7 @@ class Blackboard:
     logbook: list[LogEntry] = field(default_factory=list)
 
     # ── Memory context (injected by MemoryManager, not serialized) ──
-    memory_context: str = ""   # current agent's memory block (set before each think())
+    memory_context: str = ""  # current agent's memory block (set before each think())
 
     # ── Phase tracking ──
     current_phase: str = ""
@@ -388,8 +396,13 @@ class Blackboard:
             "crew_name": self.crew_name,
             "feature": self.feature,
             "agents": {
-                aid: {"name": a.name, "role": a.role, "active": a.active,
-                      "emoji": a.emoji, "tagline": a.tagline}
+                aid: {
+                    "name": a.name,
+                    "role": a.role,
+                    "active": a.active,
+                    "emoji": a.emoji,
+                    "tagline": a.tagline,
+                }
                 for aid, a in agents.items()
             },
         }
@@ -460,15 +473,21 @@ class Blackboard:
         # Emit incidents so the UI can show them
         if entry.retries > 0:
             self.emit(
-                EventType.LLM_INCIDENT, entry.agent_id,
+                EventType.LLM_INCIDENT,
+                entry.agent_id,
                 f"⚡ {entry.retries} retries"
-                + (f" (tier escalated {entry.tier_requested}→{entry.tier_used})" if entry.tier_escalated else "")
+                + (
+                    f" (tier escalated {entry.tier_requested}→{entry.tier_used})"
+                    if entry.tier_escalated
+                    else ""
+                )
                 + (" (thinking stripped)" if entry.thinking_stripped else "")
                 + f" | model={entry.model_used} | {entry.duration_s:.1f}s",
             )
         if not entry.success:
             self.emit(
-                EventType.LLM_INCIDENT, entry.agent_id,
+                EventType.LLM_INCIDENT,
+                entry.agent_id,
                 f"💥 LLM call FAILED after {entry.retries} retries: "
                 + (entry.errors[-1][:120] if entry.errors else "unknown"),
             )
@@ -478,14 +497,21 @@ class Blackboard:
     # ─────────────────────────────────────────────────────────────────────────
 
     def record_signoff(
-        self, artifact: str, approved: bool, feedback: str = "",
-        produced_by: str = "", reviewed_by: list[str] | None = None,
+        self,
+        artifact: str,
+        approved: bool,
+        feedback: str = "",
+        produced_by: str = "",
+        reviewed_by: list[str] | None = None,
     ) -> SignOff:
         """Record a user sign-off on an artifact with attribution."""
         version = sum(1 for s in self.signoffs if s.artifact == artifact) + 1
         so = SignOff(
-            artifact=artifact, version=version, approved=approved,
-            feedback=feedback, produced_by=produced_by,
+            artifact=artifact,
+            version=version,
+            approved=approved,
+            feedback=feedback,
+            produced_by=produced_by,
             reviewed_by=reviewed_by or [],
         )
         self.signoffs.append(so)
@@ -499,7 +525,8 @@ class Blackboard:
         attr_str = f" | {' | '.join(attr_parts)}" if attr_parts else ""
 
         self.emit(
-            EventType.USER_SIGNOFF, "user",
+            EventType.USER_SIGNOFF,
+            "user",
             f"{'✅ Approved' if approved else '❌ Rejected'} {artifact} v{version}"
             + (f": {feedback}" if feedback else "")
             + attr_str,
@@ -516,10 +543,10 @@ class Blackboard:
     #  Event helpers
     # ─────────────────────────────────────────────────────────────────────────
 
-    def emit(self, event_type: EventType, agent: str, content: str,
-             target: str = "", **metadata) -> Event:
-        ev = Event(type=event_type, agent=agent, content=content,
-                   target=target, metadata=metadata)
+    def emit(
+        self, event_type: EventType, agent: str, content: str, target: str = "", **metadata
+    ) -> Event:
+        ev = Event(type=event_type, agent=agent, content=content, target=target, metadata=metadata)
         self.events.append(ev)
         # Cap event log to prevent unbounded memory growth
         if len(self.events) > _MAX_EVENTS:
@@ -562,6 +589,46 @@ class Blackboard:
             parts.append(f"### {e.name}\n```\n{preview}\n```")
         return "\n\n".join(parts)
 
+    def approved_signatures(self) -> str:
+        """Compact interface view — only classes, functions, and exports.
+
+        Extracts `def`, `class`, `@`, top-level assignments, and docstrings
+        from each approved file.  Typically 70-80% smaller than full code,
+        saving significant tokens on review/reflection prompts.
+        """
+        approved = [e for e in self.registry.values() if e.approved]
+        if not approved:
+            return "(none)"
+        parts: list[str] = []
+        for e in approved:
+            sig_lines: list[str] = []
+            in_docstring = False
+            for line in e.code.splitlines():
+                stripped = line.strip()
+                # Track docstrings
+                if '"""' in stripped or "'''" in stripped:
+                    if in_docstring:
+                        in_docstring = False
+                        continue
+                    in_docstring = stripped.count('"""') == 1 or stripped.count("'''") == 1
+                if in_docstring:
+                    continue
+                # Keep structural lines
+                if (
+                    stripped.startswith(("def ", "class ", "async def "))
+                    or stripped.startswith("@")
+                    or (
+                        not line.startswith((" ", "\t"))
+                        and "=" in stripped
+                        and not stripped.startswith("#")
+                    )
+                    or stripped.startswith(("import ", "from "))
+                ):
+                    sig_lines.append(line)
+            code_summary = "\n".join(sig_lines) if sig_lines else "(empty)"
+            parts.append(f"### {e.name}\n```\n{code_summary}\n```")
+        return "\n\n".join(parts)
+
     def approved_full(self) -> str:
         approved = [e for e in self.registry.values() if e.approved]
         if not approved:
@@ -589,6 +656,7 @@ class Blackboard:
                 Defaults to 100K (safe for most models).
         """
         from hive.hardening import budget_context
+
         sections = []
         if self.user_profile:
             sections.append(("user_profile", self.user_profile.as_block(), 1))
@@ -647,6 +715,7 @@ class Blackboard:
 #  Checkpoint persistence
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def save_checkpoint(board: Blackboard) -> Path:
     """Save full blackboard to the project's checkpoint folder (atomic writes)."""
     cdir = board.checkpoints_dir
@@ -656,8 +725,8 @@ def save_checkpoint(board: Blackboard) -> Path:
     path = cdir / f"board_{ts}.json"
 
     d = asdict(board)
-    d.pop("events", None)     # events are too large for checkpoints
-    d.pop("logbook", None)    # logbook is saved separately in docs/
+    d.pop("events", None)  # events are too large for checkpoints
+    d.pop("logbook", None)  # logbook is saved separately in docs/
     # knowledge_base content can be large — save separately
     d.pop("knowledge_base", None)
     d.pop("memory_context", None)  # transient — managed by MemoryManager
@@ -695,9 +764,7 @@ def load_checkpoint(path: str) -> Blackboard:
         registry[name] = FileEntry(**entry_d, deferred_issues=deferred)
 
     amendments = [Amendment(**a) for a in d.pop("amendments", [])]
-    all_deferred = [
-        (item[0], Issue(**item[1])) for item in d.pop("all_deferred", [])
-    ]
+    all_deferred = [(item[0], Issue(**item[1])) for item in d.pop("all_deferred", [])]
     signoffs_raw = d.pop("signoffs", [])
     signoffs = []
     for s in signoffs_raw:
@@ -707,9 +774,9 @@ def load_checkpoint(path: str) -> Blackboard:
         signoffs.append(SignOff(**s))
 
     d.pop("events", None)
-    d.pop("logbook", None)          # logbook is not in checkpoints
-    d.pop("knowledge_base", None)   # loaded from docs/knowledge_base.json
-    d.pop("memory_context", None)   # transient — managed by MemoryManager
+    d.pop("logbook", None)  # logbook is not in checkpoints
+    d.pop("knowledge_base", None)  # loaded from docs/knowledge_base.json
+    d.pop("memory_context", None)  # transient — managed by MemoryManager
 
     board = Blackboard(
         **d,

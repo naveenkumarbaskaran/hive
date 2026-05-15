@@ -6,7 +6,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Tests](https://img.shields.io/badge/tests-677%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-715%20passing-brightgreen)
 ![Dependencies](https://img.shields.io/badge/deps-1%20(httpx)-orange)
 
 ---
@@ -75,6 +75,16 @@ hive "Build a URL shortener REST API with rate limiting"
 
 # Auto mode (skip sign-offs — great for testing/CI)
 hive --auto "Build a CLI todo app with SQLite"
+
+# Interactive build mode (approve/feedback/skip each file during build)
+hive --interactive "Build a REST API for widgets"
+
+# Live web dashboard (real-time progress)
+hive --dashboard "Build a URL shortener"
+hive --dashboard 9000 "Build a URL shortener"  # custom port
+
+# Modify an existing codebase (brownfield mode)
+hive --modify ./my-project "Add rate limiting to the API"
 
 # Attach existing docs as context
 hive --attach ./api-spec.yaml --attach ./design-doc.md "Build the payment service"
@@ -196,6 +206,59 @@ Before writing the PRD, Penny scans the feature request for patterns that common
 
 Files within the same dependency layer build concurrently (up to 4 workers). The dep graph is a DAG — no file starts until all its dependencies are approved. Checkpoints save after each layer.
 
+### Context Compression
+
+`Blackboard.approved_signatures()` extracts only function/class/import/assignment signatures from approved files — 70-80% smaller than full code. Used in self-reflection, test-fix, and integration-fix prompts for token efficiency without losing structural context.
+
+### Multi-Provider LLM Routing
+
+Route each capability tier to a different LLM provider — mix Anthropic, OpenAI, local models:
+
+```bash
+# FAST tier → cheap/fast model
+export LLM_BASE_URL_FAST=http://localhost:11434/v1
+export LLM_API_KEY_FAST=unused
+export LLM_FORMAT_FAST=openai
+
+# POWERFUL tier → best reasoning model
+export LLM_BASE_URL_POWERFUL=https://api.anthropic.com
+export LLM_API_KEY_POWERFUL=sk-ant-...
+export LLM_FORMAT_POWERFUL=anthropic
+```
+
+Thread-safe via thread-local storage for parallel builds. Per-URL format detection is cached.
+
+### Interactive Build Mode
+
+Review each file as it's generated — approve, provide feedback, or skip:
+
+```bash
+hive --interactive "Build a REST API"
+```
+
+During build, each file is shown with a prompt: `[a]pprove / [f]eedback / [s]kip`. Feedback loops back to the dev agent for re-generation before Quinn reviews.
+
+### Live Web Dashboard
+
+Real-time SSE-based web dashboard — no extra dependencies:
+
+```bash
+hive --dashboard "Build a URL shortener"        # default port 8765
+hive --dashboard 9000 "Build a URL shortener"   # custom port
+```
+
+Shows phase progress, file build status, running cost breakdown, and event log. Auto-refreshes via EventSource/SSE.
+
+### Brownfield Mode — Modify Existing Code
+
+Work with an existing codebase instead of generating greenfield:
+
+```bash
+hive --modify ./my-project "Add rate limiting to the API"
+```
+
+`codebase_index()` performs AST-based Python signature extraction and regex-based JS/TS/Java/Go analysis. The existing structure is auto-attached as knowledge and injected into architecture prompts.
+
 ### Memory System
 
 Hive has a **3-tier memory system** that makes agents smarter over time:
@@ -285,6 +348,7 @@ projects/<slug>/
 
 ```
 usage: hive [-h] [--resume PATH] [--list-projects] [-v] [--auto]
+           [--interactive] [--dashboard [PORT]] [--modify PATH]
            [--attach PATH] [--repo URL] [--log-level LEVEL] [--version]
            [feature]
 
@@ -299,6 +363,9 @@ options:
   --list-projects       List existing projects
   -v, --verbose         Verbose output
   --auto                Auto-approve all sign-offs (for testing / CI)
+  --interactive         Interactive build mode: approve/feedback/skip each file
+  --dashboard [PORT]    Launch live web dashboard (default port: 8765)
+  --modify PATH         Modify existing codebase (brownfield mode)
   --attach PATH         Attach knowledge files/folders (repeatable)
   --repo URL            Clone & study a git repo as reference (repeatable)
   --plugin PATH         Load a plugin module or package (repeatable)
@@ -366,6 +433,15 @@ All configuration is via **environment variables** — no config files to manage
 | `HIVE_PLUGINS_DIR` | `./plugins` | Directory to scan for plugin modules |
 | `HIVE_MAX_INTEGRATION_FIXES` | `2` | Max rounds of integration test fix loop |
 | `HIVE_MAX_TEST_FIX_ATTEMPTS` | `2` | Max attempts to fix test failures during build |
+| `LLM_BASE_URL_FAST` | — | Per-tier LLM endpoint for FAST tier |
+| `LLM_BASE_URL_BALANCED` | — | Per-tier LLM endpoint for BALANCED tier |
+| `LLM_BASE_URL_POWERFUL` | — | Per-tier LLM endpoint for POWERFUL tier |
+| `LLM_API_KEY_FAST` | — | Per-tier API key for FAST tier |
+| `LLM_API_KEY_BALANCED` | — | Per-tier API key for BALANCED tier |
+| `LLM_API_KEY_POWERFUL` | — | Per-tier API key for POWERFUL tier |
+| `LLM_FORMAT_FAST` | — | Per-tier format hint for FAST tier |
+| `LLM_FORMAT_BALANCED` | — | Per-tier format hint for BALANCED tier |
+| `LLM_FORMAT_POWERFUL` | — | Per-tier format hint for POWERFUL tier |
 | `NO_COLOR` | — | Disable ANSI colors (any value) |
 
 ### Rate Limit Handling
@@ -405,6 +481,14 @@ export LLM_MODEL=gpt-4o
 export LLM_BASE_URL=http://localhost:4000
 export LLM_API_KEY=your-key
 export LLM_MODEL=claude-sonnet-4-20250514
+
+# Multi-provider: route each tier to a different backend
+export LLM_BASE_URL_FAST=http://localhost:11434/v1      # Ollama for fast tasks
+export LLM_API_KEY_FAST=unused
+export LLM_FORMAT_FAST=openai
+export LLM_BASE_URL_POWERFUL=https://api.anthropic.com  # Anthropic for reasoning
+export LLM_API_KEY_POWERFUL=sk-ant-...
+export LLM_FORMAT_POWERFUL=anthropic
 ```
 
 ## Testing
@@ -420,7 +504,7 @@ make test-cov
 make lint
 ```
 
-677 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, contract amendment rebuild, dep-blocker guard, quality playbook, PII scanning, regression test generation, test execution feedback loop, integration test fix loop, and the plugin system — all without making real API calls.
+715 tests cover state management, agent logic, prompt parsing, UI rendering, connectors, memory, checkpoints, hardening utilities, parallel build, sandbox execution, cost tracking, streaming, URL ingestion, dependency context, model fallback, contract amendment rebuild, dep-blocker guard, quality playbook, PII scanning, regression test generation, test execution feedback loop, integration test fix loop, context compression, multi-provider routing, interactive build mode, live dashboard, brownfield mode, and the plugin system — all without making real API calls.
 
 ## Architecture
 
