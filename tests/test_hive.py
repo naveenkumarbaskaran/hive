@@ -5391,14 +5391,14 @@ class TestInteractiveMode:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestDashboard:
-    """Tests for the SSE-based live dashboard."""
+    """Tests for the SSE-based live dashboard v2."""
 
     def test_import_dashboard(self):
         from hive.dashboard import DashboardServer, _DashboardHandler
         assert DashboardServer is not None
         assert _DashboardHandler is not None
 
-    def test_dashboard_snapshot(self):
+    def test_dashboard_snapshot_basic(self):
         from hive.dashboard import DashboardServer
         bb = Blackboard(feature="test dashboard")
         bb.current_phase = "build"
@@ -5413,6 +5413,10 @@ class TestDashboard:
         assert "app.py" in snap["files"]
         assert snap["files"]["app.py"]["approved"] is True
         assert snap["files"]["test.py"]["approved"] is False
+        # v2 fields exist
+        assert "crew" in snap
+        assert "signoffs" in snap
+        assert "agent_activity" in snap
 
     def test_dashboard_snapshot_with_cost_tracker(self):
         from hive.dashboard import DashboardServer
@@ -5427,13 +5431,11 @@ class TestDashboard:
     def test_dashboard_start_stop(self):
         from hive.dashboard import DashboardServer
         bb = Blackboard(feature="start-stop test")
-        # Use port 0 to get an auto-assigned port (avoids conflicts)
         ds = DashboardServer(bb, port=0)
         ds.start()
         assert ds._thread is not None
         assert ds._thread.is_alive()
         ds.stop()
-        # Give it a moment to shut down
         import time
         time.sleep(0.5)
 
@@ -5443,6 +5445,144 @@ class TestDashboard:
         assert "EventSource" in _DASHBOARD_HTML
         assert "/events" in _DASHBOARD_HTML
         assert "/status" in _DASHBOARD_HTML
+
+    def test_dashboard_html_v2_sections(self):
+        """HTML template contains all v2 dashboard sections."""
+        from hive.dashboard import _DASHBOARD_HTML
+        # Crew section
+        assert "crew-grid" in _DASHBOARD_HTML
+        assert "Crew" in _DASHBOARD_HTML
+        # Signoffs section
+        assert "signoffs-list" in _DASHBOARD_HTML
+        assert "Sign-offs" in _DASHBOARD_HTML
+        # Event log with filters
+        assert "event-filters" in _DASHBOARD_HTML
+        assert "events-log" in _DASHBOARD_HTML
+        assert "Event Log" in _DASHBOARD_HTML
+        # Phase stepper pills
+        assert "phase-pills" in _DASHBOARD_HTML
+        # Agent cards render function
+        assert "renderCrew" in _DASHBOARD_HTML
+        assert "renderSignoffs" in _DASHBOARD_HTML
+        # Stat cards
+        assert "stat-phase" in _DASHBOARD_HTML
+        assert "stat-cost" in _DASHBOARD_HTML
+        assert "stat-files" in _DASHBOARD_HTML
+
+    def test_dashboard_set_agents(self):
+        """set_agents() stores serialized agent data accessible via snapshot()."""
+        from hive.agents import Agent
+        from hive.dashboard import DashboardServer
+        from hive.llm_client import ModelTier
+        bb = Blackboard(feature="crew test")
+        ds = DashboardServer(bb, port=0)
+        agents = {
+            "scout": Agent(
+                id="scout", name="Scout", role="Research Analyst",
+                emoji="🔍", tagline="I search.", tier=ModelTier.FAST, active=True,
+            ),
+            "dev_1": Agent(
+                id="dev_1", name="Dexter", role="Developer",
+                emoji="🔨", tagline="Ship it.", tier=ModelTier.POWERFUL, active=True,
+            ),
+        }
+        ds.set_agents(agents)
+        snap = ds.snapshot()
+        assert len(snap["crew"]) == 2
+        names = {a["name"] for a in snap["crew"]}
+        assert "Scout" in names
+        assert "Dexter" in names
+        # Check agent data structure
+        scout = [a for a in snap["crew"] if a["id"] == "scout"][0]
+        assert scout["emoji"] == "🔍"
+        assert scout["role"] == "Research Analyst"
+
+    def test_dashboard_signoffs_in_snapshot(self):
+        """snapshot() includes signoff data from board."""
+        from hive.dashboard import DashboardServer
+        from hive.state import SignOff
+        bb = Blackboard(feature="signoff test")
+        bb.signoffs.append(SignOff(
+            artifact="prd", version=1, approved=True,
+            produced_by="Penny 📋", reviewed_by=["Scout 🔍"],
+        ))
+        bb.signoffs.append(SignOff(
+            artifact="architecture", version=1, approved=True,
+            produced_by="Archie 🏗️", reviewed_by=["Penny 📋", "Quinn 🧪"],
+        ))
+        ds = DashboardServer(bb, port=0)
+        snap = ds.snapshot()
+        assert len(snap["signoffs"]) == 2
+        assert snap["signoffs"][0]["artifact"] == "prd"
+        assert snap["signoffs"][0]["approved"] is True
+        assert snap["signoffs"][0]["produced_by"] == "Penny 📋"
+        assert snap["signoffs"][1]["reviewed_by"] == ["Penny 📋", "Quinn 🧪"]
+
+    def test_dashboard_agent_activity_from_events(self):
+        """snapshot() derives agent activity status from recent events."""
+        from hive.dashboard import DashboardServer
+
+        bb = Blackboard(feature="activity test")
+        # Recent thinking event → agent should be "working"
+        bb.emit(EventType.THINKING, "dev_1", "Building app.py", target="app.py")
+        ds = DashboardServer(bb, port=0)
+        snap = ds.snapshot()
+        assert "dev_1" in snap["agent_activity"]
+        act = snap["agent_activity"]["dev_1"]
+        assert act["status"] == "working"
+        assert "Building app.py" in act["last_content"]
+        assert act["target"] == "app.py"
+
+    def test_dashboard_agent_activity_idle_for_old_events(self):
+        """Agent with only old events shows as idle."""
+        import time
+
+        from hive.dashboard import DashboardServer
+
+        bb = Blackboard(feature="idle test")
+        bb.emit(EventType.SPEAKING, "scout", "Done researching")
+        # Manually backdate the event timestamp
+        bb.events[-1].timestamp = time.time() - 120  # 2 minutes ago
+        ds = DashboardServer(bb, port=0)
+        snap = ds.snapshot()
+        assert "scout" in snap["agent_activity"]
+        assert snap["agent_activity"]["scout"]["status"] == "idle"
+
+    def test_dashboard_agent_activity_recent_feed(self):
+        """Agent activity includes up to 3 recent items."""
+        from hive.dashboard import DashboardServer
+        bb = Blackboard(feature="feed test")
+        bb.emit(EventType.THINKING, "dev_1", "First task")
+        bb.emit(EventType.SPEAKING, "dev_1", "Second output")
+        bb.emit(EventType.WRITING, "dev_1", "Third artifact")
+        bb.emit(EventType.SPEAKING, "dev_1", "Fourth word")
+        ds = DashboardServer(bb, port=0)
+        snap = ds.snapshot()
+        act = snap["agent_activity"]["dev_1"]
+        # Most recent event is "Fourth word" (last_content)
+        assert "Fourth word" in act["last_content"]
+        # Recent feed includes up to 3 items
+        assert len(act["recent"]) == 3
+
+    def test_dashboard_serialize_event(self):
+        """_serialize_event() produces correct dict from Event."""
+        from hive.dashboard import DashboardServer
+        bb = Blackboard(feature="serialize test")
+        bb.emit(EventType.SPEAKING, "penny", "Hello world", target="scout")
+        ev = bb.events[-1]
+        result = DashboardServer._serialize_event(ev)
+        assert result["type"] == "speaking"
+        assert result["agent"] == "penny"
+        assert result["content"] == "Hello world"
+        assert result["target"] == "scout"
+        assert isinstance(result["timestamp"], float)
+
+    def test_dashboard_crew_attr_on_eptcrew(self):
+        """EPTCrew has a dashboard attribute for wiring."""
+        from hive.crew import EPTCrew
+        crew = EPTCrew(feature="test", auto_approve=True)
+        assert hasattr(crew, "dashboard")
+        assert crew.dashboard is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

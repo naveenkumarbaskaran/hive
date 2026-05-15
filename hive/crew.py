@@ -318,6 +318,9 @@ class EPTCrew:
         # UI
         self.ui = TerminalUI(self.board, verbose=verbose)
 
+        # Dashboard — set externally by run_hive.py if --dashboard is used
+        self.dashboard: Any = None
+
         # Plugins — totally optional, zero impact when empty
         self.plugin_registry = self._init_plugins(plugin_paths)
 
@@ -1204,6 +1207,10 @@ class EPTCrew:
 
         # Save crew snapshot
         self.board.save_crew(self.agents)
+
+        # Push crew data to live dashboard if running
+        if self.dashboard and hasattr(self.dashboard, "set_agents"):
+            self.dashboard.set_agents(self.agents)
 
         self.board.emit(
             EventType.CREW_FORMED,

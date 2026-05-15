@@ -169,6 +169,8 @@ def main() -> None:
         print(f"Last phase: {board.current_phase}")
         print(f"Completed: {', '.join(board.completed_phases)}")
         ds = _start_dashboard(crew, int(args.dashboard)) if args.dashboard else None
+        if ds:
+            crew.dashboard = ds
         try:
             crew.run()
         finally:
@@ -202,6 +204,8 @@ def main() -> None:
         modify_path=modify_path,
     )
     ds = _start_dashboard(crew, int(args.dashboard)) if args.dashboard else None
+    if ds:
+        crew.dashboard = ds
     try:
         crew.run()
     finally:
