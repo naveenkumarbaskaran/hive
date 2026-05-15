@@ -596,6 +596,13 @@ class Blackboard:
         sections.append(("prd", f"PRD:\n{self.prd}", 3))
         sections.append(("architecture", f"Architecture:\n{self.architecture}", 4))
         sections.append(("contract", f"CONTRACT:\n```contract\n{self.contract}\n```", 2))
+        if self.amendments:
+            amend_text = "\n".join(
+                f"- [{a.requested_by}] {a.description[:300]}" for a in self.amendments
+            )
+            sections.append(
+                ("amendments", f"CONTRACT AMENDMENTS (applied during build):\n{amend_text}", 1)
+            )
         ij = self.interjections_context()
         if ij:
             sections.append(("interjections", ij, 1))

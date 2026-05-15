@@ -37,7 +37,7 @@ hive/
 │       ├── base.py       #     5 plugin protocols
 │       ├── registry.py   #     Plugin discovery, loading, lifecycle
 │       └── examples/     #     Example plugins (SAP, guidelines, GitHub, lifecycle)
-├── tests/                # Test suite (~547 tests)
+├── tests/                # Test suite (~571 tests)
 │   ├── test_hive.py       #   Core functionality tests
 │   ├── test_hardening.py #   Hardening & safety tests
 │   └── test_plugins.py   #   Plugin system tests

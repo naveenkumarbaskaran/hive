@@ -326,6 +326,12 @@ Rules:
 - The dep graph must be a DAG — no cycles.
 - Order files so dependencies come first.
 - Include test files if the PRD specifies testing requirements.
+- **CRITICAL: exports must list COMPLETE type signatures**, not just names.
+  Good:  exports: ["Todo(id: str, title: str, status: str, created_at: str)",
+                   "Todo.create(title: str) -> Todo",
+                   "save_todo(todo: Todo) -> None"]
+  Bad:   exports: [Todo, save_todo]
+  This prevents contract mismatches during the build phase.
 """
 
 ARCHIE_TASK = """\
@@ -394,12 +400,22 @@ QUINN_REVIEW_TASK = """\
 APPROVED FILES SO FAR:
 {approved_interfaces}
 
+CONTRACT SPEC FOR THIS FILE:
+{contract_spec}
+
 FILE UNDER REVIEW: {filename}
 ```
 {code}
 ```
 
 Review this file against the contract and PRD. Be precise about what's wrong.
+
+IMPORTANT REVIEW RULES:
+- Validate against the CONTRACT SPEC above, not just approved files.
+- If a file imports from a dependency that is declared in the contract but not yet
+  approved, that is NOT a blocker — the contract guarantees it will exist.
+- Focus on: correct exports, type signatures, error handling, and contract compliance.
+- DO NOT fail a file solely because an upstream dependency hasn't been approved yet.
 """
 
 

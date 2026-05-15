@@ -1596,10 +1596,54 @@ class EPTCrew:
                                  context="pre-review self-correction")
         return reflected
 
+    def _format_contract_spec(self, fname: str, meta: dict) -> str:
+        """Format the contract specification for a specific file.
+
+        Includes declared deps (with their contract specs) so the reviewer knows
+        what interfaces the file is *supposed* to depend on — even if those deps
+        aren't approved yet.
+        """
+        if not meta:
+            return "(no contract spec found for this file)"
+
+        parts = [
+            f"File: {fname}",
+            f"  Purpose: {meta.get('purpose', 'N/A')}",
+            f"  Deps: {meta.get('deps', [])}",
+            f"  Exports: {meta.get('exports', [])}",
+            f"  Patterns: {meta.get('patterns', [])}",
+        ]
+
+        # Include contract specs for declared dependencies
+        deps = meta.get("deps", [])
+        contract_data = getattr(self, '_contract_cache', None) or {}
+        if deps:
+            parts.append("\n  Dependency contract specs:")
+            for dep in deps:
+                dep_meta = contract_data.get(dep, {})
+                if dep_meta:
+                    parts.append(f"    {dep}:")
+                    parts.append(f"      Exports: {dep_meta.get('exports', [])}")
+                else:
+                    parts.append(f"    {dep}: (not in contract)")
+
+        # Include any amendments
+        if self.board.amendments:
+            parts.append("\n  Contract amendments:")
+            for a in self.board.amendments:
+                parts.append(f"    - [{a.requested_by}] {a.description[:200]}")
+
+        return "\n".join(parts)
+
     def _review_file(self, fname: str, entry: FileEntry) -> tuple[str, list[Issue]]:
         """Run all applicable reviewers on a file."""
         all_issues: list[Issue] = []
         worst_verdict = "PASS"
+
+        # Build contract spec for this specific file
+        contract_data = getattr(self, '_contract_cache', None) or {}
+        meta = contract_data.get(fname, {})
+        contract_spec = self._format_contract_spec(fname, meta)
 
         # On large builds (>8 files), delegate to a sub-reviewer so Quinn isn't the
         # sole bottleneck. Sub-reviewers use FAST tier; Quinn does final integration pass.
@@ -1617,6 +1661,7 @@ class EPTCrew:
         task = QUINN_REVIEW_TASK.format(
             full_context=self.board.full_context_header(),
             approved_interfaces=self.board.approved_interfaces(),
+            contract_spec=contract_spec,
             filename=fname,
             code=entry.code,
         )
@@ -1724,7 +1769,7 @@ class EPTCrew:
             return True
 
         elif "AMEND_CONTRACT" in resp.upper():
-            # Contract amendment
+            # Contract amendment — apply it and rebuild the file once
             amend_match = re.search(r"AMENDMENT:\s*(.*?)(?:RATIONALE:|$)",
                                     resp, re.DOTALL | re.IGNORECASE)
             amend_text = amend_match.group(1).strip() if amend_match else resp
@@ -1733,7 +1778,6 @@ class EPTCrew:
                 description=amend_text,
                 outcome="contract_amended",
             ))
-            entry.skip_reason = "contract amended by Judge — rebuild needed"
             self.board.emit(EventType.VERDICT, "judge",
                             f"AMEND CONTRACT for {fname}")
             self.ui.flush_events()
@@ -1743,7 +1787,41 @@ class EPTCrew:
             self._push_team_insight("judge",
                                     f"Contract was amended for {fname} — check your deps",
                                     for_agents=["archie"])
-            return False
+
+            # ── Apply amendment: append to contract and refresh cache ──
+            self.board.contract += f"\n\n# Amendment (by Judge for {fname}):\n{amend_text}"
+            if "```contract" in self.board.contract:
+                self._contract_cache = _parse_contract(self.board.contract)
+
+            # ── Rebuild the file with the amended contract (one extra attempt) ──
+            self.board.emit(EventType.SPEAKING, "system",
+                            f"🔄 Rebuilding {fname} with amended contract...")
+            self.ui.file_status(fname, "rebuilding", "post-amendment")
+            self.ui.flush_events()
+
+            # Reset file state for rebuild
+            entry.code = ""
+            entry.revision = 0
+            entry.approved = False
+            entry.skip_reason = ""
+            entry.deferred_issues = []
+
+            try:
+                success = self._build_file(fname)
+            except Exception as exc:
+                logger.error("Post-amendment rebuild of %s failed: %s", fname, exc)
+                entry.skip_reason = f"Rebuild after amendment failed: {exc}"
+                success = False
+
+            if success:
+                self.board.emit(EventType.SPEAKING, "system",
+                                f"✅ {fname} approved after contract amendment")
+            else:
+                entry.skip_reason = "contract amended by Judge — rebuild did not pass"
+                self.board.emit(EventType.SPEAKING, "system",
+                                f"⚠️ {fname} still failed after amendment rebuild")
+            self.ui.flush_events()
+            return success
 
         else:
             entry.skip_reason = "Rejected by Judge after max revisions"

@@ -95,7 +95,7 @@ and structured prompts.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `hive/crew.py` | ~2230 | 13-phase orchestrator: parallel build, sandbox loop, self-reflection, cost tracking, project DNA extraction |
+| `hive/crew.py` | ~2430 | 13-phase orchestrator: parallel build, sandbox loop, self-reflection, cost tracking, contract amendment rebuild, project DNA extraction |
 | `hive/prompts.py` | ~1200 | System prompts + task templates for all agent roles including self-reflection, project DNA |
 | `hive/ui.py` | ~1130 | ANSI terminal rendering, sign-off prompts, progress dashboard with live cost, delivery summary |
 | `hive/state.py` | ~740 | Blackboard, UserProfile, LogEntry, Events, adaptive context header, checkpoint save/load |
@@ -109,7 +109,7 @@ and structured prompts.
 | `hive/plugins/` | ~660 | **NEW** Optional plugin system: protocols (base.py), discovery+registry (registry.py), 4 example plugins |
 | `hive/__init__.py` | ~44 | Package exports |
 | `run_hive.py` | ~147 | CLI entry point with --resume, --list-projects, --auto, --attach, --repo, --plugin |
-| `tests/test_hive.py` | ~3230 | ~397 unit tests (no API calls) |
+| `tests/test_hive.py` | ~4180 | ~391 unit tests (no API calls) |
 | `tests/test_hardening.py` | ~669 | ~88 hardening + integration tests |
 | `tests/test_plugins.py` | ~760 | ~92 plugin system tests |
 

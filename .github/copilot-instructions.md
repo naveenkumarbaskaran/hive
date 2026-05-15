@@ -19,7 +19,7 @@ hive/                     ← core Python package (12 modules)
   __init__.py             ← exports + __version__
   agents.py               ← Agent dataclass, AgentRoster, DEV_POOL
   connectors.py           ← KnowledgeItem, ConnectorRegistry, git repo ingest
-  crew.py                 ← EPTCrew: 13-phase orchestrator (~2230 lines)
+  crew.py                 ← EPTCrew: 13-phase orchestrator (~2430 lines)
   hardening.py            ← atomic_write, file_lock, sanitize, budget, disk checks
   llm_client.py           ← LLMClient, ModelTier, auto-detect backend, retry+escalate
   memory.py               ← 3-tier memory: Agent → Team → Global
@@ -35,9 +35,9 @@ hive/                     ← core Python package (12 modules)
 run_hive.py               ← CLI entry point (argparse)
 llm_client.py             ← backward-compat shim → hive/llm_client.py
 tests/
-  test_hive.py            ← ~397 unit tests (NO real LLM calls)
+  test_hive.py            ← ~391 unit tests (NO real LLM calls)
   test_hardening.py       ← ~88 hardening + integration tests
-  test_plugins.py         ← ~92 plugin system tests (547 total)
+  test_plugins.py         ← ~92 plugin system tests (571 total)
 ```
 
 ## Architecture
@@ -67,6 +67,8 @@ tests/
 - **Streaming LLM** (`llm_client.py`): `on_token` callback for real-time token streaming across all backends
 - **URL Attachment** (`connectors.py`): `--attach https://...` fetches remote URLs, auto-detects type
 - **Registry-Aware Dev Context** (`crew.py`): devs get full code of declared dependencies via `_dependency_context()`
+- **Contract Amendment Rebuild** (`crew.py`): Judge's AMEND_CONTRACT verdict applies amendment, refreshes cache, and triggers a full rebuild of the file
+- **Contract-Aware Review** (`crew.py` + `prompts.py`): Quinn receives contract specs for the file under review, including dependency interfaces and amendments
 - **Plugin System** (`plugins/`): optional protocol-based plugins for knowledge, guidelines, systems, test data, lifecycle hooks
 
 ## Coding Rules — ALWAYS FOLLOW

@@ -23,7 +23,7 @@ No LangChain. No CrewAI. Just Python 3.12+, httpx, and structured prompts.
 | CLI command | `hive` |
 | Entry point | `run_hive.py` → `main()` |
 | Core package | `hive/` (12 modules + plugins subpackage) |
-| Tests | `tests/test_hive.py` (~397), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 547 total |
+| Tests | `tests/test_hive.py` (~391), `tests/test_hardening.py` (~88), `tests/test_plugins.py` (~92) — 571 total |
 | Python | ≥ 3.12 |
 | Build system | Hatchling |
 | Only runtime dep | `httpx` |
@@ -37,7 +37,7 @@ hive/                     ← repo root
 │   ├── __init__.py       ← exports + __version__
 │   ├── agents.py         ← Agent dataclass, AgentRoster, DEV_POOL
 │   ├── connectors.py     ← KnowledgeItem, ConnectorRegistry, git repo ingest
-│   ├── crew.py           ← EPTCrew: 13-phase orchestrator (largest file ~2230 lines)
+│   ├── crew.py           ← EPTCrew: 13-phase orchestrator (largest file ~2430 lines)
 │   ├── hardening.py      ← atomic_write, file_lock, sanitize, budget, disk checks
 │   ├── llm_client.py     ← LLMClient, ModelTier, auto-detect backend, retry+escalate
 │   ├── memory.py         ← 3-tier memory: Agent → Team → Global
@@ -54,7 +54,7 @@ hive/                     ← repo root
 ├── run_hive.py           ← CLI entry point (argparse)
 ├── llm_client.py         ← backward-compat shim → hive/llm_client.py
 ├── tests/
-│   ├── test_hive.py      ← ~397 unit tests (NO real LLM calls)
+│   ├── test_hive.py      ← ~391 unit tests (NO real LLM calls)
 │   ├── test_hardening.py ← hardening + integration tests
 │   └── test_plugins.py   ← plugin system tests (~92)
 ├── projects/             ← runtime output (gitignored)
@@ -110,6 +110,8 @@ ruff format hive/ tests/ run_hive.py
 - **Streaming LLM** (`hive/llm_client.py`): `on_token` callback for real-time token streaming across all backends
 - **URL Attachment** (`hive/connectors.py`): `--attach https://...` fetches remote URLs, auto-detects type
 - **Registry-Aware Dev Context** (`hive/crew.py`): devs get full code of declared dependencies via `_dependency_context()`
+- **Contract Amendment Rebuild** (`hive/crew.py`): Judge's AMEND_CONTRACT verdict applies amendment, refreshes cache, and triggers a full rebuild of the file
+- **Contract-Aware Review** (`hive/crew.py` + `hive/prompts.py`): Quinn receives contract specs for the file under review, including dependency interfaces and amendments
 - **Plugin System** (`hive/plugins/`): optional protocol-based plugins for knowledge, guidelines, systems, test data, lifecycle hooks
 
 ## Key Design Decisions — DO NOT VIOLATE

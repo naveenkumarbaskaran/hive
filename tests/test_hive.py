@@ -3821,5 +3821,360 @@ class TestDependencyContext:
         assert "{dependency_context}" in DEV_SANDBOX_REVISION_TASK
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  Contract Spec Formatting Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestFormatContractSpec:
+    """Tests for the _format_contract_spec() method in EPTCrew."""
+
+    @pytest.fixture
+    def crew_with_contract(self, tmp_path, monkeypatch):
+        """Create an EPTCrew with a contract cache and amendments-capable board."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("HIVE_PROJECTS_DIR", str(tmp_path / "projects"))
+
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.resolve_model = MagicMock(return_value="test-model")
+
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = Blackboard(feature="test contract spec")
+        crew.client = mock_client
+        crew.agents = {}
+        crew.ui = MagicMock()
+        crew._contract_cache = {
+            "src/models.py": {
+                "purpose": "Data models",
+                "deps": [],
+                "exports": ["User(id: int, name: str)", "Todo(id: int, title: str)"],
+                "patterns": ["dataclass"],
+            },
+            "src/routes.py": {
+                "purpose": "API routes",
+                "deps": ["src/models.py", "src/db.py"],
+                "exports": ["create_user(name: str) -> User"],
+                "patterns": ["REST"],
+            },
+            "src/db.py": {
+                "purpose": "Database layer",
+                "deps": [],
+                "exports": ["get_db() -> Database"],
+                "patterns": [],
+            },
+        }
+        return crew
+
+    def test_basic_formatting(self, crew_with_contract):
+        """Should format file's purpose, deps, exports, patterns."""
+        meta = crew_with_contract._contract_cache["src/models.py"]
+        result = crew_with_contract._format_contract_spec("src/models.py", meta)
+        assert "src/models.py" in result
+        assert "Data models" in result
+        assert "User(id: int, name: str)" in result
+        assert "dataclass" in result
+
+    def test_includes_dep_specs(self, crew_with_contract):
+        """Should include contract specs for declared dependencies."""
+        meta = crew_with_contract._contract_cache["src/routes.py"]
+        result = crew_with_contract._format_contract_spec("src/routes.py", meta)
+        assert "Dependency contract specs" in result
+        assert "src/models.py" in result
+        assert "User(id: int, name: str)" in result
+        assert "src/db.py" in result
+        assert "get_db() -> Database" in result
+
+    def test_dep_not_in_contract(self, crew_with_contract):
+        """Should show '(not in contract)' for unknown deps."""
+        meta = {"purpose": "test", "deps": ["src/unknown.py"], "exports": [], "patterns": []}
+        result = crew_with_contract._format_contract_spec("test.py", meta)
+        assert "src/unknown.py" in result
+        assert "not in contract" in result
+
+    def test_no_deps(self, crew_with_contract):
+        """Should not show dependency section when deps is empty."""
+        meta = crew_with_contract._contract_cache["src/models.py"]
+        result = crew_with_contract._format_contract_spec("src/models.py", meta)
+        assert "Dependency contract specs" not in result
+
+    def test_empty_meta(self, crew_with_contract):
+        """Should return fallback message for empty meta."""
+        result = crew_with_contract._format_contract_spec("unknown.py", {})
+        assert "no contract spec" in result
+
+    def test_none_meta(self, crew_with_contract):
+        """Should return fallback message for None meta."""
+        result = crew_with_contract._format_contract_spec("unknown.py", None)
+        assert "no contract spec" in result
+
+    def test_includes_amendments(self, crew_with_contract):
+        """Should include contract amendments when present."""
+        from hive.state import Amendment
+        crew_with_contract.board.amendments.append(
+            Amendment(requested_by="judge", description="Add error field to User model")
+        )
+        meta = crew_with_contract._contract_cache["src/models.py"]
+        result = crew_with_contract._format_contract_spec("src/models.py", meta)
+        assert "Contract amendments" in result
+        assert "judge" in result
+        assert "Add error field" in result
+
+    def test_no_amendments(self, crew_with_contract):
+        """Should not show amendments section when none exist."""
+        meta = crew_with_contract._contract_cache["src/models.py"]
+        result = crew_with_contract._format_contract_spec("src/models.py", meta)
+        assert "amendments" not in result.lower() or "Contract amendments" not in result
+
+    def test_no_contract_cache(self, crew_with_contract):
+        """Should handle missing _contract_cache gracefully."""
+        crew_with_contract._contract_cache = None
+        meta = {"purpose": "test", "deps": ["src/models.py"], "exports": [], "patterns": []}
+        result = crew_with_contract._format_contract_spec("test.py", meta)
+        # Should not crash; deps section should show 'not in contract'
+        assert "src/models.py" in result
+        assert "not in contract" in result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  AMEND_CONTRACT Rebuild Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestAmendContractRebuild:
+    """Tests for the AMEND_CONTRACT branch in _escalate_to_judge()."""
+
+    @pytest.fixture
+    def crew_for_judge(self, tmp_path, monkeypatch):
+        """Create an EPTCrew ready for judge escalation testing."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("HIVE_PROJECTS_DIR", str(tmp_path / "projects"))
+
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.resolve_model = MagicMock(return_value="test-model")
+
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = Blackboard(feature="test judge")
+        crew.board.contract = (
+            "```contract\n"
+            "src/app.py:\n"
+            "  purpose: main application entry point\n"
+            "  deps: []\n"
+            "  exports: [run()]\n"
+            "  patterns: []\n"
+            "```"
+        )
+        crew.board.registry = {
+            "src/app.py": FileEntry(
+                name="src/app.py",
+                code="def run(): pass  # broken",
+                revision=3,
+                approved=False,
+            ),
+        }
+        crew.board.file_plan = ["src/app.py"]
+        crew.client = mock_client
+        crew.agents = {}
+        crew.ui = MagicMock()
+        crew._contract_cache = _parse_contract(crew.board.contract)
+        crew._memory_stack = []
+        crew._request_pacer = MagicMock()
+        # Stub out methods not under test
+        crew._record_lesson = MagicMock()
+        crew._push_team_insight = MagicMock()
+        crew._set_memory = MagicMock()
+        crew._clear_memory = MagicMock()
+        return crew
+
+    def _run_judge(self, crew, judge_resp, build_side_effect=None, build_return=True):
+        """Helper: run _escalate_to_judge with mocked Agent.think + _build_file."""
+        entry = crew.board.registry["src/app.py"]
+        issues = [Issue(severity="blocker", code="", description="test issue")]
+        build_kwargs = (
+            {"side_effect": build_side_effect}
+            if build_side_effect
+            else {"return_value": build_return}
+        )
+        with (
+            patch.object(AgentRoster.JUDGE, "think", return_value=judge_resp),
+            patch.object(crew, "_build_file", **build_kwargs) as mock_build,
+        ):
+            result = crew._escalate_to_judge("src/app.py", entry, issues, 3)
+        return result, entry, mock_build
+
+    def test_amend_contract_triggers_rebuild(self, crew_for_judge):
+        """AMEND_CONTRACT should call _build_file to rebuild the file."""
+        resp = "AMEND_CONTRACT\nAMENDMENT: Add error handling to run()\nRATIONALE: Missing try/except"
+        result, _entry, mock_build = self._run_judge(crew_for_judge, resp)
+
+        assert result is True
+        mock_build.assert_called_once_with("src/app.py")
+
+    def test_amend_contract_updates_contract_text(self, crew_for_judge):
+        """AMEND_CONTRACT should append amendment text to board.contract."""
+        original_contract = crew_for_judge.board.contract
+        resp = "AMEND_CONTRACT\nAMENDMENT: Add timeout parameter\nRATIONALE: Needs timeout"
+        self._run_judge(crew_for_judge, resp)
+
+        assert "Add timeout parameter" in crew_for_judge.board.contract
+        assert len(crew_for_judge.board.contract) > len(original_contract)
+
+    def test_amend_contract_creates_amendment_record(self, crew_for_judge):
+        """AMEND_CONTRACT should add an Amendment to board.amendments."""
+        assert len(crew_for_judge.board.amendments) == 0
+        resp = "AMEND_CONTRACT\nAMENDMENT: Add validation\nRATIONALE: Missing input validation"
+        self._run_judge(crew_for_judge, resp)
+
+        assert len(crew_for_judge.board.amendments) == 1
+        assert crew_for_judge.board.amendments[0].requested_by == "judge"
+        assert "Add validation" in crew_for_judge.board.amendments[0].description
+
+    def test_amend_contract_resets_file_state(self, crew_for_judge):
+        """AMEND_CONTRACT should reset entry before rebuild."""
+        entry = crew_for_judge.board.registry["src/app.py"]
+        entry.code = "old code"
+        entry.revision = 3
+
+        captured = {}
+
+        def capture_build(fname):
+            e = crew_for_judge.board.registry[fname]
+            captured["code"] = e.code
+            captured["revision"] = e.revision
+            captured["approved"] = e.approved
+            return True
+
+        resp = "AMEND_CONTRACT\nAMENDMENT: Fix signature\nRATIONALE: Wrong types"
+        self._run_judge(crew_for_judge, resp, build_side_effect=capture_build)
+
+        assert captured["code"] == ""
+        assert captured["revision"] == 0
+        assert captured["approved"] is False
+
+    def test_amend_contract_rebuild_failure(self, crew_for_judge):
+        """AMEND_CONTRACT should return False if rebuild fails."""
+        resp = "AMEND_CONTRACT\nAMENDMENT: Add logging\nRATIONALE: Missing logs"
+        result, entry, _ = self._run_judge(crew_for_judge, resp, build_return=False)
+
+        assert result is False
+        assert "amendment" in entry.skip_reason.lower() or "rebuild" in entry.skip_reason.lower()
+
+    def test_amend_contract_rebuild_exception(self, crew_for_judge):
+        """AMEND_CONTRACT should handle _build_file exceptions gracefully."""
+        resp = "AMEND_CONTRACT\nAMENDMENT: Add retry logic\nRATIONALE: Flaky"
+        result, entry, _ = self._run_judge(
+            crew_for_judge, resp, build_side_effect=RuntimeError("build boom"),
+        )
+
+        assert result is False
+        assert entry.skip_reason
+
+    def test_approve_verdict_unchanged(self, crew_for_judge):
+        """APPROVE verdict should still work (not broken by AMEND_CONTRACT changes)."""
+        result, entry, _ = self._run_judge(
+            crew_for_judge, "APPROVE — code is acceptable with minor deferred issues",
+        )
+        assert result is True
+        assert entry.approved is True
+
+    def test_reject_verdict_unchanged(self, crew_for_judge):
+        """REJECT verdict should still work (not broken by AMEND_CONTRACT changes)."""
+        result, entry, _ = self._run_judge(
+            crew_for_judge, "REJECT — fundamentally flawed approach",
+        )
+        assert result is False
+        assert entry.skip_reason
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Quinn Review Contract Spec Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestReviewContractSpec:
+    """Tests for contract spec integration in the review pipeline."""
+
+    def test_quinn_review_task_has_contract_spec_field(self):
+        """QUINN_REVIEW_TASK template must accept contract_spec."""
+        from hive.prompts import QUINN_REVIEW_TASK
+        assert "{contract_spec}" in QUINN_REVIEW_TASK
+
+    def test_quinn_review_task_has_review_rules(self):
+        """QUINN_REVIEW_TASK should include rules about not failing for unapproved deps."""
+        from hive.prompts import QUINN_REVIEW_TASK
+        assert "DO NOT fail" in QUINN_REVIEW_TASK
+        assert "upstream dependency" in QUINN_REVIEW_TASK or "approved" in QUINN_REVIEW_TASK
+
+    def test_quinn_review_task_formats_with_contract_spec(self):
+        """QUINN_REVIEW_TASK should format cleanly with contract_spec kwarg."""
+        from hive.prompts import QUINN_REVIEW_TASK
+        result = QUINN_REVIEW_TASK.format(
+            full_context="CONTEXT HERE",
+            approved_interfaces="APPROVED",
+            contract_spec="File: test.py\n  Purpose: test\n  Deps: []\n  Exports: []",
+            filename="test.py",
+            code="print('hello')",
+        )
+        assert "File: test.py" in result
+        assert "Purpose: test" in result
+
+    def test_archie_prompt_requires_complete_signatures(self):
+        """Archie's system prompt should require complete type signatures in exports."""
+        assert "COMPLETE type signatures" in ARCHIE_SYSTEM
+        assert "exports" in ARCHIE_SYSTEM
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Amendments in full_context_header Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestAmendmentsInContext:
+    """Tests for amendments visibility in full_context_header."""
+
+    def test_amendments_shown_in_context(self):
+        """Amendments should appear in full_context_header when present."""
+        from hive.state import Amendment
+        board = Blackboard(feature="test amendments")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={"language": "Python"}, scale_tier="startup",
+        )
+        board.amendments.append(
+            Amendment(requested_by="judge", description="Add error field to User")
+        )
+        ctx = board.full_context_header()
+        assert "CONTRACT AMENDMENTS" in ctx
+        assert "judge" in ctx
+        assert "Add error field" in ctx
+
+    def test_no_amendments_section_when_empty(self):
+        """full_context_header should not show amendments section when empty."""
+        board = Blackboard(feature="test no amendments")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={"language": "Python"}, scale_tier="startup",
+        )
+        ctx = board.full_context_header()
+        assert "CONTRACT AMENDMENTS" not in ctx
+
+    def test_multiple_amendments(self):
+        """Multiple amendments should all appear in context."""
+        from hive.state import Amendment
+        board = Blackboard(feature="test multi amendments")
+        board.research = ResearchContext(
+            domain="test", product_type="API", has_frontend=False,
+            stack={"language": "Python"}, scale_tier="startup",
+        )
+        board.amendments.append(
+            Amendment(requested_by="judge", description="Fix User model")
+        )
+        board.amendments.append(
+            Amendment(requested_by="judge", description="Add rate limiting")
+        )
+        ctx = board.full_context_header()
+        assert "Fix User model" in ctx
+        assert "Add rate limiting" in ctx
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
