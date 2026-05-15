@@ -68,6 +68,14 @@ tests/
 6. **Python 3.12+** — use modern syntax: `X | Y` unions, `match/case`, etc.
 7. **Type hints on all function signatures**. Docstrings on all public APIs.
 8. **Conventional commits**: `feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `ci:`.
+9. **Keep docs in sync with code** — after ANY codebase change (new module, new feature,
+   new env var, changed architecture, updated line counts/test counts), update ALL of:
+   - `ARCHITECTURE.md` — module map, design patterns, data flow diagrams
+   - `README.md` — test badge count, feature descriptions, env var tables, output structure
+   - `CLAUDE.md` — module count, test count, repo layout, key patterns, env vars
+   - `.github/copilot-instructions.md` — mirrors CLAUDE.md (module count, patterns, env vars)
+   - `CONTRIBUTING.md` — project structure, coding guidance
+   Commit doc updates as a separate `docs:` commit or include in the `feat:`/`fix:` commit.
 
 ## Code Style
 
