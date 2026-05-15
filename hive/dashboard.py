@@ -456,9 +456,11 @@ function buildFilters(){
   el.innerHTML=agents.map(a=>{
     const cls=a===activeFilter?'active':'';
     const label=a==='all'?'All':esc(a);
-    return '<button class="filter-btn '+cls+'" data-filter="'+esc(a)+
-           '" onclick="setFilter(\''+esc(a)+'\')">'+label+'</button>';
+    return '<button class="filter-btn '+cls+'" data-filter="'+esc(a)+'">'+label+'</button>';
   }).join('');
+  el.querySelectorAll('.filter-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>setFilter(btn.dataset.filter));
+  });
 }
 
 function setFilter(f){
@@ -541,22 +543,55 @@ function updateDashboard(d){
     'live · '+new Date().toLocaleTimeString();
 }
 
-/* ── SSE Connection ── */
-const evtSrc=new EventSource('/events');
-evtSrc.addEventListener('status',e=>{
-  const d=JSON.parse(e.data);
-  updateDashboard(d);
-});
-evtSrc.addEventListener('event',e=>{
-  addEvent(JSON.parse(e.data),true);
-});
-evtSrc.onerror=()=>{
-  document.getElementById('updated').textContent='reconnecting…';
-  setTimeout(()=>location.reload(),4000);
-};
+/* ── SSE Connection with auto-reconnect ── */
+let sseActive=false;
+let evtSrc=null;
+let lastFeature='';
 
-// Initial fetch (fallback if SSE takes a moment)
+function connectSSE(){
+  if(evtSrc){evtSrc.close();evtSrc=null;}
+  try{
+    evtSrc=new EventSource('/events');
+    evtSrc.addEventListener('status',e=>{
+      sseActive=true;
+      const d=JSON.parse(e.data);
+      updateDashboard(d);
+    });
+    evtSrc.addEventListener('event',e=>{
+      addEvent(JSON.parse(e.data),true);
+    });
+    evtSrc.onerror=()=>{
+      sseActive=false;
+      document.getElementById('updated').textContent='reconnecting…';
+      evtSrc.close();evtSrc=null;
+      setTimeout(connectSSE,2000);
+    };
+  }catch(e){console.warn('SSE not available, using polling');}
+}
+connectSSE();
+
+/* ── Periodic polling fallback — also detects new runs ── */
+setInterval(()=>{
+  fetch('/status').then(r=>r.json()).then(d=>{
+    // New run detected: feature changed — clear stale event log and reconnect SSE
+    if(lastFeature && d.feature && d.feature!==lastFeature){
+      eventCount=0;
+      knownAgents=new Set();
+      document.getElementById('events-log').innerHTML='<div class="events-empty">Waiting for events…</div>';
+      document.getElementById('event-log-count').textContent='0';
+      buildFilters();
+      if(!evtSrc)connectSSE();
+    }
+    lastFeature=d.feature||lastFeature;
+    updateDashboard(d);
+  }).catch(()=>{
+    document.getElementById('updated').textContent='waiting for run…';
+  });
+},3000);
+
+// Initial fetch
 fetch('/status').then(r=>r.json()).then(d=>{
+  lastFeature=d.feature||'';
   updateDashboard(d);
 }).catch(()=>{});
 </script>
@@ -572,6 +607,9 @@ fetch('/status').then(r=>r.json()).then(d=>{
 
 class _DashboardHandler(BaseHTTPRequestHandler):
     """HTTP handler that serves the dashboard HTML and SSE event stream."""
+
+    # Force HTTP/1.1 so SSE keep-alive and chunked responses work in browsers
+    protocol_version = "HTTP/1.1"
 
     # Suppress default HTTP logging to terminal
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -601,6 +639,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         body = json.dumps(data).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
@@ -616,10 +655,14 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         # ── Initial payload: full snapshot ──
-        self._send_sse("status", json.dumps(server.snapshot()))
+        try:
+            self._send_sse("status", json.dumps(server.snapshot()))
+        except Exception:
+            return
 
         # ── Send existing events (last 100) to populate the event log ──
-        events = server.board.events
+        current_board = server.board
+        events = current_board.events
         start = max(0, len(events) - 100)
         for ev in events[start:]:
             self._send_sse("event", json.dumps(server._serialize_event(ev)))
@@ -629,8 +672,23 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 
         try:
             while not server._stop_event.is_set():
-                # Push new events
-                events = server.board.events
+                # Detect board swap (standalone reload from checkpoint)
+                if server.board is not current_board:
+                    current_board = server.board
+                    events = current_board.events
+                    # Resend last 100 events from the new board
+                    start = max(0, len(events) - 100)
+                    for ev in events[start:]:
+                        self._send_sse(
+                            "event", json.dumps(server._serialize_event(ev))
+                        )
+                    last_event_idx = len(events)
+                    self._send_sse("status", json.dumps(server.snapshot()))
+                    last_status_time = time.time()
+                    continue
+
+                # Push new events from same board
+                events = current_board.events
                 if len(events) > last_event_idx:
                     for ev in events[last_event_idx:]:
                         self._send_sse(
@@ -638,9 +696,9 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                         )
                     last_event_idx = len(events)
 
-                # Periodic status update (every 2s)
+                # Periodic status update (every 3s)
                 now = time.time()
-                if now - last_status_time >= 2.0:
+                if now - last_status_time >= 3.0:
                     self._send_sse("status", json.dumps(server.snapshot()))
                     last_status_time = now
 

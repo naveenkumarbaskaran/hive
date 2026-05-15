@@ -427,6 +427,7 @@ class EPTCrew:
                     raise
                 except Exception as exc:
                     self.cost_tracker.end_phase()
+                    self._sync_costs()
                     if name in critical_phases:
                         raise  # critical phase — can't recover
                     # Non-critical phase: save checkpoint, log, continue
@@ -441,6 +442,7 @@ class EPTCrew:
                     self.board.completed_phases.append(name)
                 else:
                     self.cost_tracker.end_phase()
+                    self._sync_costs()
                     # Plugin lifecycle: phase end
                     if self.plugin_registry and pctx:
                         self.plugin_registry.on_phase_end(name, pctx)

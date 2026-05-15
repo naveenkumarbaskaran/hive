@@ -171,6 +171,9 @@ def main() -> None:
         ds = _start_dashboard(crew, int(args.dashboard)) if args.dashboard else None
         if ds:
             crew.dashboard = ds
+            # Populate crew cards immediately on resume if crew was already assembled
+            if crew.agents:
+                ds.set_agents(crew.agents)
         try:
             crew.run()
         finally:

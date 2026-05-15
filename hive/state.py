@@ -725,7 +725,7 @@ def save_checkpoint(board: Blackboard) -> Path:
     path = cdir / f"board_{ts}.json"
 
     d = asdict(board)
-    d.pop("events", None)  # events are too large for checkpoints
+    events_raw = d.pop("events", None)  # saved separately as events.json sidecar
     d.pop("logbook", None)  # logbook is saved separately in docs/
     # knowledge_base content can be large — save separately
     d.pop("knowledge_base", None)
@@ -734,6 +734,11 @@ def save_checkpoint(board: Blackboard) -> Path:
 
     content = json.dumps(d, indent=2, default=str)
     atomic_write(path, content)
+
+    # Save events sidecar so the dashboard can replay them on resume
+    if events_raw:
+        events_path = cdir / "events.json"
+        atomic_write(events_path, json.dumps(events_raw, indent=2, default=str))
 
     # Also save a "latest" copy for quick resume (atomic, no read-back)
     latest = cdir / "board_latest.json"
@@ -796,6 +801,20 @@ def load_checkpoint(path: str) -> Blackboard:
             board.knowledge_base = [KnowledgeItem(**item) for item in kb_data]
         except Exception:
             pass  # graceful degradation — knowledge can be re-ingested
+
+    # Rehydrate events from sidecar (saved alongside checkpoint)
+    events_path = p.parent / "events.json"
+    if events_path.exists():
+        try:
+            raw_events = json.loads(events_path.read_text(encoding="utf-8"))
+            for ev in raw_events:
+                try:
+                    ev["type"] = EventType(ev["type"])
+                    board.events.append(Event(**ev))
+                except Exception:
+                    pass
+        except Exception:
+            pass  # graceful degradation — events can be lost without breaking resume
 
     return board
 
