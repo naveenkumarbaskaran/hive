@@ -281,6 +281,7 @@ class Blackboard:
 
     # ── Verdicts ──
     integration_verdict: str = ""
+    integration_notes: str = ""   # Quinn's detailed findings
     release_verdict: str = ""
 
     # ── Test documentation ──

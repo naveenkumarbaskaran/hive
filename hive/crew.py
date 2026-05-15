@@ -284,6 +284,10 @@ class EPTCrew:
 
         done = set(self.board.completed_phases)
 
+        # ── Resilient phase execution ──
+        # Critical phases that must succeed (cannot degrade gracefully)
+        critical_phases = {"welcome", "prd", "architecture", "crew", "build"}
+
         try:
             for name, fn in phases:
                 if name in done:
@@ -291,7 +295,22 @@ class EPTCrew:
                                     f"Skipping {name} (already completed)")
                     self.ui.flush_events()
                     continue
-                fn()
+                try:
+                    fn()
+                except KeyboardInterrupt:
+                    raise  # always honour user interrupts
+                except Exception as exc:
+                    if name in critical_phases:
+                        raise  # critical phase — can't recover
+                    # Non-critical phase: save checkpoint, log, continue
+                    logger.error("Phase %s failed (non-critical): %s", name, exc)
+                    self.board.emit(
+                        EventType.ERROR, "system",
+                        f"Phase '{name}' failed: {exc} — continuing (non-critical)",
+                    )
+                    self.ui.flush_events()
+                    self._save()
+                    self.board.completed_phases.append(name)
         except KeyboardInterrupt:
             print("\n\n  ⚠️  Pipeline interrupted by user. Saving checkpoint...")
             self._save()
@@ -600,6 +619,7 @@ class EPTCrew:
         self.ui.flush_events()
 
         penny = AgentRoster.PENNY
+        prev_prd = ""  # track previous version for diff
 
         for attempt in range(3):  # max 3 revisions
             task = PENNY_PRD_TASK.format(
@@ -626,6 +646,10 @@ class EPTCrew:
                             f"PRD draft v{attempt + 1} written ({len(resp.splitlines())} lines)")
             self.ui.flush_events()
 
+            # Show diff on revision so the user can see what changed
+            if attempt > 0 and prev_prd:
+                self.ui.revision_diff("PRD", prev_prd, resp, attempt + 1)
+
             # Sign-off
             if self.auto_approve:
                 self.board.record_signoff("prd", True,
@@ -650,6 +674,7 @@ class EPTCrew:
                 self._record_mistake("penny",
                                      f"PRD was rejected: {feedback[:200]}",
                                      context=f"PRD draft v{attempt + 1}")
+            prev_prd = resp
 
         # Push PRD scope insight to the team
         self._push_team_insight(
@@ -747,6 +772,7 @@ class EPTCrew:
         self.ui.flush_events()
 
         archie = AgentRoster.ARCHIE
+        prev_arch = ""  # track previous version for diff
 
         for attempt in range(3):
             context = self.board.full_context_header() if attempt == 0 else (
@@ -801,6 +827,10 @@ class EPTCrew:
                             f"Architecture + contract: {len(contract_data)} files defined")
             self.ui.flush_events()
 
+            # Show diff on revision so the user can see what changed
+            if attempt > 0 and prev_arch:
+                self.ui.revision_diff("Architecture", prev_arch, resp, attempt + 1)
+
             # Sign-off
             preview = (
                 f"Architecture ({len(arch_text.splitlines())} lines)\n\n"
@@ -830,6 +860,7 @@ class EPTCrew:
                 self._record_mistake("archie",
                                      f"Architecture was rejected: {feedback[:200]}",
                                      context=f"Architecture draft v{attempt + 1}")
+            prev_arch = resp
 
         # Push architecture decisions to team memory
         self._push_team_insight(
@@ -1414,6 +1445,9 @@ class EPTCrew:
         self._clear_memory()
         self.ui.flush_events()
 
+        # Store Quinn's detailed findings for transparency
+        self.board.integration_notes = resp
+
         if "PASS" in resp.upper():
             self.board.integration_verdict = "PASS"
             self.board.emit(EventType.VERDICT, "quinn",
@@ -1422,6 +1456,27 @@ class EPTCrew:
             self.board.integration_verdict = "FAIL"
             self.board.emit(EventType.VERDICT, "quinn",
                             "Integration: FAIL — see notes")
+
+            # ── Integration Gate: FAIL requires explicit override ──
+            if self.auto_approve:
+                self.board.emit(
+                    EventType.ESCALATION, "quinn",
+                    "⚠️  Integration FAILED in auto mode — proceeding with warning. "
+                    "Review integration notes in delivery summary.",
+                )
+            else:
+                override = self.ui.integration_gate(resp)
+                if override:
+                    self.board.emit(EventType.AGREEMENT, "user",
+                                    "User overrode integration FAIL — proceeding to release")
+                    self.board.integration_verdict = "FAIL_OVERRIDDEN"
+                else:
+                    self.board.emit(EventType.DISAGREEMENT, "user",
+                                    "User declined to override — pipeline halted at integration")
+                    self._save()
+                    self.board.completed_phases.append("integration")
+                    self.ui.phase_footer("Integration Testing")
+                    raise KeyboardInterrupt("Integration gate: user declined override")
 
         self.ui.flush_events()
         self.board.completed_phases.append("integration")

@@ -492,6 +492,112 @@ class TerminalUI:
                 # Treat as feedback / change request
                 return False, resp
 
+    def integration_gate(self, quinn_notes: str) -> bool:
+        """Show integration FAIL details and ask user to override or halt.
+
+        Returns True if user overrides (proceed to release), False to halt.
+        """
+        w = term_width()
+        print()
+        print(colored("  ┌" + "─" * (w - 6) + "┐", C.RED))
+        print(colored("  │", C.RED)
+              + colored("  ⚠️  INTEGRATION GATE — Quinn found issues", C.BOLD, C.RED)
+              + " " * max(0, w - 52)
+              + colored("│", C.RED))
+        print(colored("  └" + "─" * (w - 6) + "┘", C.RED))
+        print()
+
+        # Show Quinn's notes (first 30 lines)
+        preview_lines = quinn_notes.splitlines()[:30]
+        for line in preview_lines:
+            wrapped = textwrap.fill(line, width=w - 8)
+            for wl in wrapped.splitlines():
+                print(colored("    │ ", C.DIM) + wl)
+        if len(quinn_notes.splitlines()) > 30:
+            print(colored(
+                f"    │ ... ({len(quinn_notes.splitlines())} total lines)", C.DIM
+            ))
+        print()
+        print(colored(
+            "  Integration FAIL normally blocks release.", C.YELLOW, C.BOLD
+        ))
+        print(colored(
+            "  You can override to proceed, or halt and fix issues first.",
+            C.DIM,
+        ))
+        print()
+
+        while True:
+            print(colored("  👨‍💻 ", C.WHITE)
+                  + colored("Override and proceed to release? ", C.BOLD)
+                  + colored("[y]es / [n]o (halt): ", C.DIM), end="")
+            try:
+                resp = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return False
+            if resp in ("y", "yes"):
+                return True
+            elif resp in ("n", "no", ""):
+                return False
+
+    def revision_diff(
+        self, artifact: str, old_content: str, new_content: str,
+        version: int,
+    ) -> None:
+        """Show a human-readable diff summary between document versions.
+
+        Compares old vs new line counts, highlights added/removed sections,
+        and shows a structural changelog — NOT a raw unified diff.
+        """
+        w = term_width()
+        print()
+        print(colored(
+            f"  📝 REVISION DIFF: {artifact.upper()} v{version - 1} → v{version}",
+            C.CYAN, C.BOLD,
+        ))
+
+        old_lines = old_content.splitlines()
+        new_lines = new_content.splitlines()
+        print(colored(
+            f"    Lines: {len(old_lines)} → {len(new_lines)} "
+            f"({'+' if len(new_lines) >= len(old_lines) else ''}"
+            f"{len(new_lines) - len(old_lines)})",
+            C.DIM,
+        ))
+
+        # Compute section-level changes (## headings)
+        old_sections = {ln.strip() for ln in old_lines if ln.strip().startswith("##")}
+        new_sections = {ln.strip() for ln in new_lines if ln.strip().startswith("##")}
+        added_sections = new_sections - old_sections
+        removed_sections = old_sections - new_sections
+
+        if added_sections:
+            print(colored("    + Added sections:", C.GREEN))
+            for s in sorted(added_sections):
+                print(colored(f"      {s}", C.GREEN))
+        if removed_sections:
+            print(colored("    - Removed sections:", C.RED))
+            for s in sorted(removed_sections):
+                print(colored(f"      {s}", C.RED))
+
+        # Show new lines that contain keywords (functional requirements, etc.)
+        old_set = set(old_lines)
+        new_unique = [ln for ln in new_lines if ln not in old_set and ln.strip()]
+        # Filter to interesting lines (requirements, endpoints, key decisions)
+        interesting = [
+            ln for ln in new_unique
+            if any(kw in ln.upper() for kw in [
+                "FR-", "NFR-", "MUST", "SHALL", "API", "ENDPOINT",
+                "MODULE", "SEARCH", "STORAGE", "DELETE", "CREATE",
+            ])
+        ][:10]
+        if interesting:
+            print(colored("    + Key additions:", C.GREEN))
+            for line in interesting:
+                truncated = line.strip()[:w - 12]
+                print(colored(f"      {truncated}", C.GREEN, C.DIM))
+        print()
+
     def user_input(self, prompt: str, multiline: bool = False) -> str:
         """Ask the user for freeform input."""
         print()
@@ -751,14 +857,72 @@ class TerminalUI:
                     line += f"  [reviewed: {', '.join(so.reviewed_by)}]"
                 print(colored(line, C.GREEN if so.approved else C.RED))
 
-        # Deferred
+        # Deferred — triaged by severity
         if b.all_deferred:
             print()
-            print(colored(f"  ⚠️  Deferred issues: {len(b.all_deferred)}", C.YELLOW))
-            for fname, issue in b.all_deferred[:5]:
-                print(colored(f"    [{issue.severity}] {fname}: {issue.description}", C.DIM))
-            if len(b.all_deferred) > 5:
-                print(colored(f"    ... and {len(b.all_deferred) - 5} more", C.DIM))
+            # Group by severity
+            by_severity: dict[str, list[tuple]] = {}
+            for fname, issue in b.all_deferred:
+                sev = issue.severity.lower()
+                by_severity.setdefault(sev, []).append((fname, issue))
+
+            # Priority order: blocker > warning > minor > deferred > info
+            severity_order = ["blocker", "warning", "minor", "deferred", "info"]
+            sorted_sevs = sorted(
+                by_severity.keys(),
+                key=lambda s: severity_order.index(s) if s in severity_order else 99,
+            )
+
+            blockers = by_severity.get("blocker", [])
+            warnings = by_severity.get("warning", [])
+            low = sum(len(v) for k, v in by_severity.items() if k not in ("blocker", "warning"))
+
+            # Summary line
+            parts = []
+            if blockers:
+                parts.append(colored(f"{len(blockers)} blockers", C.RED, C.BOLD))
+            if warnings:
+                parts.append(colored(f"{len(warnings)} warnings", C.YELLOW))
+            if low:
+                parts.append(colored(f"{low} minor/info", C.DIM))
+            summary = ", ".join(parts) if parts else str(len(b.all_deferred))
+
+            print(colored(
+                f"  ⚠️  Deferred issues: {len(b.all_deferred)} ({summary})",
+                C.YELLOW,
+            ))
+
+            # Show blockers and warnings fully, minor/info just counts
+            for sev in sorted_sevs:
+                items = by_severity[sev]
+                sev_color = {
+                    "blocker": C.RED, "warning": C.YELLOW,
+                }.get(sev, C.DIM)
+                if sev in ("blocker", "warning"):
+                    for fname, issue in items[:5]:
+                        print(colored(
+                            f"    [{sev}] {fname}: {issue.description}",
+                            sev_color,
+                        ))
+                    if len(items) > 5:
+                        print(colored(f"    ... +{len(items) - 5} more {sev}", sev_color))
+                else:
+                    # Consolidate minor/info into one-line count per file
+                    file_counts: dict[str, int] = {}
+                    for fname, _ in items:
+                        file_counts[fname] = file_counts.get(fname, 0) + 1
+                    files_summary = ", ".join(
+                        f"{f} ({c})" for f, c in sorted(
+                            file_counts.items(), key=lambda x: -x[1]
+                        )[:5]
+                    )
+                    remaining = len(file_counts) - 5
+                    if remaining > 0:
+                        files_summary += f", +{remaining} more"
+                    print(colored(
+                        f"    [{sev}] {len(items)} issues across: {files_summary}",
+                        C.DIM,
+                    ))
 
         # Amendments
         if b.amendments:
@@ -770,8 +934,28 @@ class TerminalUI:
         # Verdicts
         print()
         if b.integration_verdict:
-            vcolor = C.GREEN if "PASS" in b.integration_verdict.upper() else C.RED
-            print(colored(f"  🧪 Integration: {b.integration_verdict}", vcolor, C.BOLD))
+            verdict_upper = b.integration_verdict.upper()
+            if "PASS" in verdict_upper:
+                vcolor = C.GREEN
+                vicon = "✅"
+            elif "OVERRIDDEN" in verdict_upper:
+                vcolor = C.YELLOW
+                vicon = "⚠️"
+            else:
+                vcolor = C.RED
+                vicon = "❌"
+            print(colored(
+                f"  🧪 Integration: {vicon} {b.integration_verdict}", vcolor, C.BOLD,
+            ))
+            # Show first few lines of integration notes for context
+            notes = getattr(b, "integration_notes", "")
+            if notes and "FAIL" in verdict_upper:
+                note_lines = [
+                    ln for ln in notes.splitlines()
+                    if ln.strip() and not ln.strip().startswith("#")
+                ][:5]
+                for nl in note_lines:
+                    print(colored(f"    {nl.strip()[:80]}", C.DIM))
         if b.release_verdict:
             print(colored(f"  🚀 Release: {b.release_verdict[:100]}", C.GREEN, C.BOLD))
 

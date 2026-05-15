@@ -2066,5 +2066,316 @@ class TestUIDroppedFiles:
         assert "resume" in captured.out.lower()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Integration Gate Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestIntegrationGate:
+    """Tests for the integration gate (FAIL blocks release unless overridden)."""
+
+    def _make_crew(self, auto_approve: bool = False) -> EPTCrew:
+        crew = EPTCrew(feature="test", auto_approve=auto_approve)
+        crew.client = MagicMock()
+        crew.memory = MagicMock()
+        crew.memory.context_for_agent = MagicMock(return_value="")
+        return crew
+
+    def _mock_chat(self, text: str):
+        """Create a mock chat that returns an LLMResponse."""
+        return MagicMock(return_value=LLMResponse(
+            text=text, model="test-model",
+        ))
+
+    def test_integration_pass_no_gate(self, capsys):
+        """PASS verdict should not trigger the gate."""
+        crew = self._make_crew(auto_approve=True)
+        crew.board.completed_phases = ["build"]
+        crew.board.registry["app.py"] = FileEntry(
+            name="app.py", approved=True, code="print('hi')",
+        )
+        crew.client.chat = self._mock_chat("VERDICT: PASS\nAll good.")
+        crew._phase_integration()
+
+        assert crew.board.integration_verdict == "PASS"
+        captured = capsys.readouterr()
+        assert "INTEGRATION GATE" not in captured.out
+
+    def test_integration_fail_auto_mode_warns(self, capsys):
+        """Auto mode: FAIL should emit warning but continue."""
+        crew = self._make_crew(auto_approve=True)
+        crew.board.completed_phases = ["build"]
+        crew.board.registry["app.py"] = FileEntry(
+            name="app.py", approved=True, code="print('hi')",
+        )
+        crew.client.chat = self._mock_chat("VERDICT: FAIL\nMissing tests.")
+        crew._phase_integration()
+
+        assert crew.board.integration_verdict == "FAIL"
+        # Should have warning event
+        events = [e for e in crew.board.events if e.type == EventType.ESCALATION]
+        assert len(events) >= 1
+        assert "auto mode" in events[0].content.lower() or "auto" in events[0].content
+
+    def test_integration_fail_interactive_override(self, monkeypatch, capsys):
+        """User overrides integration FAIL — proceeds to release."""
+        crew = self._make_crew(auto_approve=False)
+        crew.board.completed_phases = ["build"]
+        crew.board.registry["app.py"] = FileEntry(
+            name="app.py", approved=True, code="x",
+        )
+        crew.client.chat = self._mock_chat("FAIL: issues found")
+        # Simulate user typing "y" to override
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: "y")
+        crew._phase_integration()
+
+        assert crew.board.integration_verdict == "FAIL_OVERRIDDEN"
+        assert "integration" in crew.board.completed_phases
+
+    def test_integration_fail_interactive_halt(self, monkeypatch, capsys):
+        """User declines override — pipeline should halt."""
+        crew = self._make_crew(auto_approve=False)
+        crew.board.completed_phases = ["build"]
+        crew.board.registry["app.py"] = FileEntry(
+            name="app.py", approved=True, code="x",
+        )
+        crew.client.chat = self._mock_chat("FAIL: issues found")
+        crew._save = MagicMock()  # avoid serialization of mock logbook entries
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: "n")
+
+        with pytest.raises(KeyboardInterrupt, match="Integration gate"):
+            crew._phase_integration()
+
+    def test_integration_notes_stored(self):
+        """Quinn's full response should be stored in integration_notes."""
+        crew = self._make_crew(auto_approve=True)
+        crew.board.completed_phases = ["build"]
+        crew.board.registry["app.py"] = FileEntry(
+            name="app.py", approved=True, code="x",
+        )
+        response_text = "VERDICT: PASS\n\n## Analysis\nAll imports resolve correctly."
+        crew.client.chat = self._mock_chat(response_text)
+        crew._phase_integration()
+
+        assert crew.board.integration_notes == response_text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Revision Diff Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestRevisionDiff:
+    """Tests for the revision_diff UI method."""
+
+    def test_diff_shows_section_changes(self, capsys):
+        """Diff should highlight added/removed ## sections."""
+        board = Blackboard(feature="test")
+        ui = TerminalUI(board, verbose=False)
+
+        old = "## Overview\nSome text\n## Requirements\nFR-01: Create note"
+        new = (
+            "## Overview\nSome text\n## Requirements\nFR-01: Create note\n"
+            "## Search\nFR-05: Search notes by keyword"
+        )
+        ui.revision_diff("PRD", old, new, 2)
+
+        captured = capsys.readouterr()
+        assert "REVISION DIFF" in captured.out
+        assert "PRD" in captured.out
+        assert "v1 → v2" in captured.out
+        assert "Search" in captured.out
+
+    def test_diff_shows_line_count_change(self, capsys):
+        """Diff summary should show line count delta."""
+        board = Blackboard(feature="test")
+        ui = TerminalUI(board, verbose=False)
+
+        old = "line1\nline2\nline3"
+        new = "line1\nline2\nline3\nline4\nline5"
+        ui.revision_diff("Architecture", old, new, 2)
+
+        captured = capsys.readouterr()
+        assert "+2" in captured.out  # 3 → 5 = +2
+
+    def test_diff_shows_key_additions(self, capsys):
+        """Functional keywords like FR- should be surfaced."""
+        board = Blackboard(feature="test")
+        ui = TerminalUI(board, verbose=False)
+
+        old = "## Reqs\nFR-01: Create"
+        new = "## Reqs\nFR-01: Create\nFR-02: SEARCH notes MUST return results"
+        ui.revision_diff("PRD", old, new, 2)
+
+        captured = capsys.readouterr()
+        assert "Key additions" in captured.out
+        assert "FR-02" in captured.out or "SEARCH" in captured.out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Deferred Issue Triage Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDeferredIssueTriage:
+    """Tests for severity-grouped deferred issues in the delivery summary."""
+
+    def test_triage_groups_by_severity(self, capsys):
+        """Summary should group deferred issues by severity."""
+        board = Blackboard(feature="test")
+        board.all_deferred = [
+            ("app.py", Issue(severity="blocker", description="Missing import", code="")),
+            ("app.py", Issue(severity="minor", description="Pedantic note", code="")),
+            ("test.py", Issue(severity="warning", description="No edge case test", code="")),
+            ("test.py", Issue(severity="minor", description="Style thing", code="")),
+            ("util.py", Issue(severity="minor", description="Could use comprehension", code="")),
+        ]
+        ui = TerminalUI(board, verbose=False)
+        ui.final_summary()
+
+        captured = capsys.readouterr()
+        assert "1 blockers" in captured.out or "1 blocker" in captured.out
+        assert "1 warnings" in captured.out or "1 warning" in captured.out
+        assert "3 minor" in captured.out
+
+    def test_triage_shows_blockers_fully(self, capsys):
+        """Blockers should have their full description shown."""
+        board = Blackboard(feature="test")
+        board.all_deferred = [
+            ("app.py", Issue(severity="blocker", description="Missing import os", code="")),
+            ("test.py", Issue(severity="minor", description="Pedantic", code="")),
+        ]
+        ui = TerminalUI(board, verbose=False)
+        ui.final_summary()
+
+        captured = capsys.readouterr()
+        assert "Missing import os" in captured.out
+
+    def test_triage_consolidates_minor(self, capsys):
+        """Minor issues should be consolidated into per-file counts."""
+        board = Blackboard(feature="test")
+        board.all_deferred = [
+            ("app.py", Issue(severity="minor", description="Thing 1", code="")),
+            ("app.py", Issue(severity="minor", description="Thing 2", code="")),
+            ("app.py", Issue(severity="minor", description="Thing 3", code="")),
+        ]
+        ui = TerminalUI(board, verbose=False)
+        ui.final_summary()
+
+        captured = capsys.readouterr()
+        # Should show "3 issues across: app.py (3)" style consolidation
+        assert "app.py" in captured.out
+        assert "3" in captured.out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Resilient Phase Execution Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestResilientPhaseExecution:
+    """Tests for graceful degradation of non-critical phases."""
+
+    def _make_crew(self) -> EPTCrew:
+        crew = EPTCrew(feature="test", auto_approve=True)
+        crew.client = MagicMock()
+        crew.memory = MagicMock()
+        crew.memory.context_for_agent = MagicMock(return_value="")
+        crew.memory.load_global = MagicMock()
+        crew.memory.load = MagicMock()
+        crew.memory.stats = MagicMock(return_value={})
+        return crew
+
+    def test_noncritical_phase_failure_continues(self, tmp_path, monkeypatch):
+        """Non-critical phase (ratification) failure should not crash pipeline."""
+        monkeypatch.setattr("hive.state.PROJECTS_DIR", tmp_path)
+        crew = self._make_crew()
+
+        # Mark all phases as done except ratification and release
+        crew.board.completed_phases = [
+            "welcome", "ingest", "research", "interview",
+            "prd", "feasibility", "architecture",
+            # "ratification" — will fail
+            "crew", "build", "integration", "test_docs",
+            # "release" — will succeed
+        ]
+        crew.board.project_slug = "test_proj"
+        crew.board.init_project()
+
+        # Make ratification raise
+        def failing_ratification():
+            raise RuntimeError("LLM timeout")
+
+        crew._phase_ratification = failing_ratification
+
+        # Make release a no-op
+        def noop_release():
+            crew.board.completed_phases.append("release")
+
+        crew._phase_release = noop_release
+
+        board = crew.run()
+        # Pipeline should have completed release despite ratification failure
+        assert "release" in board.completed_phases
+        assert "ratification" in board.completed_phases  # marked done after failure
+
+    def test_critical_phase_failure_raises(self, tmp_path, monkeypatch):
+        """Critical phase (build) failure should crash the pipeline."""
+        monkeypatch.setattr("hive.state.PROJECTS_DIR", tmp_path)
+        crew = self._make_crew()
+
+        crew.board.completed_phases = [
+            "welcome", "ingest", "research", "interview",
+            "prd", "feasibility", "architecture", "ratification", "crew",
+        ]
+        crew.board.project_slug = "test_proj"
+        crew.board.init_project()
+
+        def failing_build():
+            raise RuntimeError("Build failed hard")
+
+        crew._phase_build = failing_build
+
+        with pytest.raises(RuntimeError, match="Build failed hard"):
+            crew.run()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Integration Verdict Display Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestIntegrationVerdictDisplay:
+    """Tests for enhanced integration verdict display in delivery summary."""
+
+    def test_fail_overridden_shows_warning_icon(self, capsys):
+        """FAIL_OVERRIDDEN should show warning icon, not red cross."""
+        board = Blackboard(feature="test")
+        board.integration_verdict = "FAIL_OVERRIDDEN"
+        board.integration_notes = "Some issues found but user overrode."
+        ui = TerminalUI(board, verbose=False)
+        ui.final_summary()
+
+        captured = capsys.readouterr()
+        assert "⚠️" in captured.out
+        assert "FAIL_OVERRIDDEN" in captured.out
+
+    def test_fail_shows_integration_notes(self, capsys):
+        """FAIL verdict should show first few lines of Quinn's notes."""
+        board = Blackboard(feature="test")
+        board.integration_verdict = "FAIL"
+        board.integration_notes = (
+            "# Integration Review\n\n"
+            "Missing error handling in cli_commands.py\n"
+            "Import mismatch between storage.py and note_service.py"
+        )
+        ui = TerminalUI(board, verbose=False)
+        ui.final_summary()
+
+        captured = capsys.readouterr()
+        assert "Missing error handling" in captured.out
+        assert "Import mismatch" in captured.out
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

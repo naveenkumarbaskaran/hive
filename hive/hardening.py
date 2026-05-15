@@ -450,7 +450,8 @@ def validate_checkpoint_data(data: dict) -> dict:
     # Ensure string fields
     for field_name in ("feature", "project_slug", "crew_name", "prd",
                        "architecture", "contract", "current_phase",
-                       "integration_verdict", "release_verdict",
+                       "integration_verdict", "integration_notes",
+                       "release_verdict",
                        "repo_analysis"):
         data.setdefault(field_name, "")
         if not isinstance(data[field_name], str):
