@@ -10,6 +10,7 @@ Users can attach:
   - Test cases                   (test_*.py, *_test.*, *.spec.*)
   - Full directories             (recursed & classified per-file)
   - Git repositories             (cloned, analyzed by Scout, used as reference)
+  - URLs                         (https://... — fetched via httpx, auto-typed)
 
 Each ingested item becomes a KnowledgeItem stored on the Blackboard.
 Large files are auto-summarized by Scout; small ones are injected in full.
@@ -25,6 +26,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
 
 from hive.hardening import register_temp_path
 
@@ -324,13 +328,18 @@ class ConnectorRegistry:
         path_str: str,
         force_type: ConnectorType | None = None,
     ) -> list[KnowledgeItem]:
-        """Ingest a path (file or directory) into KnowledgeItems.
+        """Ingest a path, URL, or directory into KnowledgeItems.
 
         Accepts:
           - A file path:     "./docs/spec.md"
           - A directory:     "./docs/"
           - A typed path:    "./api.yaml:api_spec" (colon-separated override)
+          - A URL:           "https://example.com/spec.yaml" (fetched via httpx)
         """
+        # ── URL handling: fetch remote content ──────────────────────────
+        if is_url(path_str):
+            return cls.ingest_url(path_str, force_type)
+
         # Check for type override suffix  "path:type_name"
         # E.g. "./file.json:api_spec" or "/abs/path.json:api_spec"
         if ":" in path_str:
@@ -348,6 +357,63 @@ class ConnectorRegistry:
         else:
             item = cls.ingest_file(path, force_type)
             return [item] if item else []
+
+    @classmethod
+    def ingest_url(
+        cls,
+        url: str,
+        force_type: ConnectorType | None = None,
+    ) -> list[KnowledgeItem]:
+        """Fetch a URL and ingest its content as a KnowledgeItem.
+
+        Auto-detects type from URL path extension or Content-Type header.
+        Returns empty list on fetch failure.
+        """
+        text, raw_size, content_type = fetch_url(url)
+        if text is None:
+            return []
+
+        # Detect type from URL path extension, then Content-Type header
+        ctype = force_type
+        if ctype is None:
+            url_path = urlparse(url).path
+            ext = Path(url_path).suffix.lower()
+            if ext:
+                ctype = _EXT_MAP.get(ext)
+            if ctype is None:
+                ctype = _content_type_to_connector(content_type)
+
+        label = _url_label(url)
+
+        # Size-based processing (same logic as ingest_file)
+        if raw_size <= SMALL_THRESHOLD:
+            content = text
+            was_summarized = False
+        elif raw_size <= MEDIUM_THRESHOLD:
+            content = cls._truncate(text)
+            was_summarized = False
+        else:
+            content = cls._truncate(text)
+            was_summarized = True
+
+        tags = [ctype.value, "url"]
+        # Add domain as a tag for routing context
+        domain = urlparse(url).netloc
+        if domain:
+            tags.append(domain)
+
+        item = KnowledgeItem(
+            source_type=ctype.value,
+            source_path=url,
+            label=label,
+            content=content,
+            raw_size=raw_size,
+            was_summarized=was_summarized,
+            summary="",
+            tags=tags,
+            metadata={"url": url, "content_type": content_type},
+        )
+        return [item]
 
     @classmethod
     def ingest_all(cls, paths: list[str]) -> list[KnowledgeItem]:
@@ -464,6 +530,88 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes / 1024:.1f} KB"
     else:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  URL support — fetch remote content for --attach https://...
+# ─────────────────────────────────────────────────────────────────────────────
+
+_URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
+
+# Map Content-Type header values to ConnectorType
+_CONTENT_TYPE_MAP: dict[str, ConnectorType] = {
+    "text/markdown": ConnectorType.DOCUMENT,
+    "text/plain": ConnectorType.DOCUMENT,
+    "text/html": ConnectorType.DOCUMENT,
+    "text/csv": ConnectorType.DATA_FILE,
+    "application/json": ConnectorType.DATA_FILE,
+    "application/yaml": ConnectorType.DATA_FILE,
+    "application/x-yaml": ConnectorType.DATA_FILE,
+    "text/yaml": ConnectorType.DATA_FILE,
+    "application/xml": ConnectorType.DATA_FILE,
+    "text/xml": ConnectorType.DATA_FILE,
+    "application/sql": ConnectorType.SCHEMA,
+    "application/graphql": ConnectorType.API_SPEC,
+}
+
+
+def is_url(path_str: str) -> bool:
+    """Check if a string is an HTTP(S) URL (not a git repo URL)."""
+    stripped = path_str.strip()
+    # Git URLs are handled separately by is_git_url()
+    if is_git_url(stripped):
+        return False
+    return bool(_URL_PATTERN.match(stripped))
+
+
+def fetch_url(url: str, timeout: int = 30) -> tuple[str | None, int, str]:
+    """Fetch a URL and return (text, size_bytes, content_type).
+
+    Returns (None, 0, "") on failure. Handles redirects, timeouts,
+    and non-text responses gracefully.
+    """
+    try:
+        resp = httpx.get(
+            url.strip(),
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": "Hive-EPT/1.0 (knowledge-ingest)"},
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        logger.warning("Failed to fetch URL %s: %s", url, exc)
+        return None, 0, ""
+
+    content_type = resp.headers.get("content-type", "")
+    # Extract mime type (strip charset and params)
+    mime = content_type.split(";")[0].strip().lower()
+
+    # Reject binary content types
+    if mime.startswith(("image/", "audio/", "video/", "application/octet-stream",
+                        "application/zip", "application/pdf")):
+        logger.warning("Skipping binary URL %s (content-type: %s)", url, mime)
+        return None, 0, ""
+
+    text = resp.text
+    raw_size = len(resp.content)
+    return text, raw_size, mime
+
+
+def _content_type_to_connector(content_type: str) -> ConnectorType:
+    """Map a MIME content-type to a ConnectorType. Defaults to DOCUMENT."""
+    ct = content_type.split(";")[0].strip().lower()
+    return _CONTENT_TYPE_MAP.get(ct, ConnectorType.DOCUMENT)
+
+
+def _url_label(url: str) -> str:
+    """Extract a human-readable label from a URL."""
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    if path:
+        name = path.rsplit("/", 1)[-1]
+        if name:
+            return name
+    return parsed.netloc or url[:50]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

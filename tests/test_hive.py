@@ -19,8 +19,12 @@ from hive.connectors import (
     ConnectorRegistry,
     ConnectorType,
     KnowledgeItem,
+    _content_type_to_connector,
+    _url_label,
+    fetch_url,
     format_size,
     is_git_url,
+    is_url,
     knowledge_context,
     knowledge_for_agent,
     repo_file_tree,
@@ -931,7 +935,7 @@ class TestChatRetryLoop:
 
         original_openai = client._chat_openai
 
-        def mock_openai(system, messages, model, temperature, max_tokens):
+        def mock_openai(system, messages, model, temperature, max_tokens, **kwargs):
             nonlocal call_count
             call_count += 1
             models_tried.append(model)
@@ -959,7 +963,7 @@ class TestChatRetryLoop:
 
         call_count = 0
 
-        def mock_openai(system, messages, model, temperature, max_tokens):
+        def mock_openai(system, messages, model, temperature, max_tokens, **kwargs):
             nonlocal call_count
             call_count += 1
             # Fail first 3 (one per pool model), succeed on 4th
@@ -985,7 +989,7 @@ class TestChatRetryLoop:
         call_count = 0
         models_tried: list[str] = []
 
-        def mock_openai(system, messages, model, temperature, max_tokens):
+        def mock_openai(system, messages, model, temperature, max_tokens, **kwargs):
             nonlocal call_count
             call_count += 1
             models_tried.append(model)
@@ -3225,6 +3229,440 @@ class TestProjectDNA:
         assert "{filename}" in DEV_SELF_REFLECT_TASK
         assert "{exports}" in DEV_SELF_REFLECT_TASK
         assert "Self-critique" in DEV_SELF_REFLECT_TASK
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  URL-based Knowledge Attachment Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestIsURL:
+    """Tests for the is_url() detection function."""
+
+    def test_https_url(self):
+        assert is_url("https://example.com/spec.yaml") is True
+
+    def test_http_url(self):
+        assert is_url("http://api.example.com/docs.json") is True
+
+    def test_local_path_not_url(self):
+        assert is_url("/home/user/file.txt") is False
+
+    def test_relative_path_not_url(self):
+        assert is_url("./docs/spec.md") is False
+
+    def test_git_url_not_treated_as_url(self):
+        """Git URLs are handled by is_git_url(), not is_url()."""
+        assert is_url("https://github.com/user/repo") is False
+
+    def test_git_url_dotgit_not_treated_as_url(self):
+        assert is_url("https://github.com/user/repo.git") is False
+
+    def test_empty_string(self):
+        assert is_url("") is False
+
+    def test_url_with_whitespace(self):
+        assert is_url("  https://example.com/file.md  ") is True
+
+
+class TestURLLabel:
+    """Tests for _url_label() helper."""
+
+    def test_label_from_path(self):
+        assert _url_label("https://example.com/docs/spec.yaml") == "spec.yaml"
+
+    def test_label_from_domain(self):
+        assert _url_label("https://example.com/") == "example.com"
+
+    def test_label_from_domain_no_path(self):
+        assert _url_label("https://example.com") == "example.com"
+
+
+class TestContentTypeMapping:
+    """Tests for _content_type_to_connector()."""
+
+    def test_json(self):
+        assert _content_type_to_connector("application/json") == ConnectorType.DATA_FILE
+
+    def test_yaml(self):
+        assert _content_type_to_connector("application/yaml") == ConnectorType.DATA_FILE
+
+    def test_markdown(self):
+        assert _content_type_to_connector("text/markdown") == ConnectorType.DOCUMENT
+
+    def test_plain_text(self):
+        assert _content_type_to_connector("text/plain") == ConnectorType.DOCUMENT
+
+    def test_csv(self):
+        assert _content_type_to_connector("text/csv") == ConnectorType.DATA_FILE
+
+    def test_sql(self):
+        assert _content_type_to_connector("application/sql") == ConnectorType.SCHEMA
+
+    def test_unknown_defaults_to_document(self):
+        assert _content_type_to_connector("text/x-unknown") == ConnectorType.DOCUMENT
+
+    def test_with_charset(self):
+        """Should strip charset params before mapping."""
+        assert _content_type_to_connector("application/json; charset=utf-8") == ConnectorType.DATA_FILE
+
+
+class TestFetchURL:
+    """Tests for fetch_url() — uses mocked httpx."""
+
+    @patch("hive.connectors.httpx.get")
+    def test_successful_fetch(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.text = "# Hello World"
+        mock_resp.content = b"# Hello World"
+        mock_resp.headers = {"content-type": "text/markdown"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        text, size, ct = fetch_url("https://example.com/readme.md")
+        assert text == "# Hello World"
+        assert size == 13
+        assert ct == "text/markdown"
+
+    @patch("hive.connectors.httpx.get")
+    def test_fetch_failure(self, mock_get):
+        mock_get.side_effect = Exception("Connection timeout")
+
+        text, size, ct = fetch_url("https://example.com/fail")
+        assert text is None
+        assert size == 0
+        assert ct == ""
+
+    @patch("hive.connectors.httpx.get")
+    def test_fetch_binary_rejected(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.text = "\x00\x01binary"
+        mock_resp.content = b"\x00\x01binary"
+        mock_resp.headers = {"content-type": "image/png"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        text, size, ct = fetch_url("https://example.com/image.png")
+        assert text is None
+
+
+class TestIngestURL:
+    """Tests for ConnectorRegistry.ingest_url()."""
+
+    @patch("hive.connectors.fetch_url")
+    def test_ingest_url_yaml(self, mock_fetch):
+        mock_fetch.return_value = ("openapi: '3.0'\ninfo:\n  title: API", 40, "application/yaml")
+
+        items = ConnectorRegistry.ingest_url("https://example.com/openapi.yaml")
+        assert len(items) == 1
+        item = items[0]
+        # .yaml maps to data_file (name-based overrides only apply to local files)
+        assert item.source_type == "data_file"
+        assert item.label == "openapi.yaml"
+        assert "url" in item.tags
+        assert item.metadata["url"] == "https://example.com/openapi.yaml"
+
+    @patch("hive.connectors.fetch_url")
+    def test_ingest_url_json(self, mock_fetch):
+        mock_fetch.return_value = ('{"data": [1, 2, 3]}', 20, "application/json")
+
+        items = ConnectorRegistry.ingest_url("https://api.example.com/data.json")
+        assert len(items) == 1
+        assert items[0].source_type == "data_file"
+
+    @patch("hive.connectors.fetch_url")
+    def test_ingest_url_failure(self, mock_fetch):
+        mock_fetch.return_value = (None, 0, "")
+
+        items = ConnectorRegistry.ingest_url("https://example.com/missing")
+        assert items == []
+
+    @patch("hive.connectors.fetch_url")
+    def test_ingest_url_fallback_type(self, mock_fetch):
+        """When URL has no extension and Content-Type is unknown, defaults to document."""
+        mock_fetch.return_value = ("some content here", 18, "text/html")
+
+        items = ConnectorRegistry.ingest_url("https://example.com/page")
+        assert len(items) == 1
+        assert items[0].source_type == "document"
+
+    @patch("hive.connectors.fetch_url")
+    def test_ingest_url_force_type(self, mock_fetch):
+        mock_fetch.return_value = ("SELECT * FROM users;", 20, "text/plain")
+
+        items = ConnectorRegistry.ingest_url(
+            "https://example.com/query.txt",
+            force_type=ConnectorType.SCHEMA,
+        )
+        assert len(items) == 1
+        assert items[0].source_type == "schema"
+
+    @patch("hive.connectors.fetch_url")
+    def test_ingest_url_large_file_summarized(self, mock_fetch):
+        large_content = "line\n" * 20_000  # ~100KB
+        mock_fetch.return_value = (large_content, len(large_content.encode()), "text/plain")
+
+        items = ConnectorRegistry.ingest_url("https://example.com/big.txt")
+        assert len(items) == 1
+        assert items[0].was_summarized is True
+
+
+class TestIngestURLIntegration:
+    """Test that ingest() dispatches URLs correctly."""
+
+    @patch("hive.connectors.fetch_url")
+    def test_ingest_dispatches_url(self, mock_fetch):
+        mock_fetch.return_value = ("# API Docs\nfoo bar", 20, "text/markdown")
+
+        items = ConnectorRegistry.ingest("https://example.com/api.md")
+        assert len(items) == 1
+        assert items[0].source_type == "document"
+        assert items[0].label == "api.md"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Streaming LLM Output Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestStreamingCallback:
+    """Tests for the on_token streaming callback in LLMClient."""
+
+    def test_chat_accepts_on_token_param(self):
+        """chat() should accept on_token parameter without error."""
+        from hive.llm_client import LLMClient
+        client = LLMClient(api_key="test", base_url="https://api.anthropic.com")
+        # Just verify the signature accepts it — we don't call it for real
+        import inspect
+        sig = inspect.signature(client.chat)
+        assert "on_token" in sig.parameters
+
+    def test_anthropic_sdk_streams_tokens(self):
+        """_chat_anthropic_sdk should call on_token for each text delta."""
+        from hive.llm_client import LLMClient
+
+        client = LLMClient(api_key="test", base_url="https://api.anthropic.com")
+
+        # Mock the Anthropic SDK client
+        mock_sdk = MagicMock()
+
+        # Create mock streaming events
+        event1 = MagicMock()
+        event1.type = "content_block_delta"
+        event1.delta = MagicMock()
+        event1.delta.type = "text_delta"
+        event1.delta.text = "Hello"
+
+        event2 = MagicMock()
+        event2.type = "content_block_delta"
+        event2.delta = MagicMock()
+        event2.delta.type = "text_delta"
+        event2.delta.text = " World"
+
+        # Mock the stream context manager
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter([event1, event2]))
+
+        # Mock final message
+        final_msg = MagicMock()
+        final_msg.content = [MagicMock(type="text", text="Hello World")]
+        final_msg.usage = MagicMock(
+            input_tokens=10, output_tokens=5,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        final_msg.stop_reason = "end_turn"
+        mock_stream.get_final_message = MagicMock(return_value=final_msg)
+        mock_sdk.messages.stream = MagicMock(return_value=mock_stream)
+
+        client._anthropic_client = mock_sdk
+        client._format = client.ANTHROPIC_NATIVE
+
+        tokens_collected: list[str] = []
+        resp = client._chat_anthropic_sdk(
+            system="test",
+            messages=[{"role": "user", "content": "hi"}],
+            model="test-model",
+            temperature=0,
+            max_tokens=100,
+            thinking=None,
+            on_token=lambda t: tokens_collected.append(t),
+        )
+
+        assert tokens_collected == ["Hello", " World"]
+        assert resp.text == "Hello World"
+
+    def test_anthropic_sdk_no_streaming_without_callback(self):
+        """Without on_token, should use get_final_message directly."""
+        from hive.llm_client import LLMClient
+
+        client = LLMClient(api_key="test", base_url="https://api.anthropic.com")
+
+        mock_sdk = MagicMock()
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+
+        final_msg = MagicMock()
+        final_msg.content = [MagicMock(type="text", text="Complete response")]
+        final_msg.usage = MagicMock(
+            input_tokens=10, output_tokens=5,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        final_msg.stop_reason = "end_turn"
+        mock_stream.get_final_message = MagicMock(return_value=final_msg)
+        mock_sdk.messages.stream = MagicMock(return_value=mock_stream)
+
+        client._anthropic_client = mock_sdk
+        client._format = client.ANTHROPIC_NATIVE
+
+        resp = client._chat_anthropic_sdk(
+            system="test",
+            messages=[{"role": "user", "content": "hi"}],
+            model="test-model",
+            temperature=0,
+            max_tokens=100,
+            thinking=None,
+            on_token=None,
+        )
+
+        assert resp.text == "Complete response"
+        # Should NOT have iterated events
+        mock_stream.__iter__.assert_not_called() if hasattr(mock_stream, '__iter__') else None
+
+    def test_agent_think_passes_on_token(self):
+        """Agent.think() should forward on_token to the LLM client."""
+        from hive.agents import Agent
+
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.resolve_model = MagicMock(return_value="test-model")
+        mock_resp = LLMResponse(
+            text="generated code",
+            model="test-model",
+            input_tokens=10,
+            output_tokens=5,
+        )
+        mock_client.chat = MagicMock(return_value=mock_resp)
+
+        board = Blackboard(feature="test")
+
+        agent = Agent(
+            id="dev_1", name="Dexter", role="Developer",
+            emoji="🔨", tagline="Test dev",
+        )
+
+        callback = MagicMock()
+        agent.think(board, "write code", "you are a dev", mock_client, on_token=callback)
+
+        # Verify on_token was passed to client.chat
+        call_kwargs = mock_client.chat.call_args
+        assert call_kwargs.kwargs.get("on_token") is callback
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Registry-Aware Dependency Context Tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestDependencyContext:
+    """Tests for the _dependency_context() method in EPTCrew."""
+
+    @pytest.fixture
+    def crew_with_registry(self, tmp_path, monkeypatch):
+        """Create an EPTCrew with files in the registry."""
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("HIVE_PROJECTS_DIR", str(tmp_path / "projects"))
+
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.resolve_model = MagicMock(return_value="test-model")
+
+        crew = EPTCrew.__new__(EPTCrew)
+        crew.board = Blackboard(feature="test deps")
+        crew.client = mock_client
+        crew.agents = {}
+        crew.ui = MagicMock()
+
+        # Add some files to the registry
+        crew.board.registry = {
+            "src/utils.py": FileEntry(
+                name="src/utils.py",
+                code='"""Utilities."""\n\ndef helper():\n    return 42\n',
+                approved=True,
+            ),
+            "src/models.py": FileEntry(
+                name="src/models.py",
+                code='"""Models."""\n\nclass User:\n    name: str\n    email: str\n',
+                approved=True,
+            ),
+            "src/routes.py": FileEntry(
+                name="src/routes.py",
+                code="",
+                approved=False,
+            ),
+        }
+        return crew
+
+    def test_returns_dep_code(self, crew_with_registry):
+        """Should return full code of declared dependencies."""
+        meta = {"deps": ["src/utils.py", "src/models.py"]}
+        ctx = crew_with_registry._dependency_context("src/routes.py", meta)
+        assert "src/utils.py" in ctx
+        assert "def helper():" in ctx
+        assert "src/models.py" in ctx
+        assert "class User:" in ctx
+
+    def test_empty_deps(self, crew_with_registry):
+        """Should return empty string when no deps declared."""
+        meta = {"deps": []}
+        ctx = crew_with_registry._dependency_context("src/routes.py", meta)
+        assert ctx == ""
+
+    def test_no_deps_key(self, crew_with_registry):
+        """Should return empty string when deps key is missing."""
+        meta = {}
+        ctx = crew_with_registry._dependency_context("src/routes.py", meta)
+        assert ctx == ""
+
+    def test_dep_not_in_registry(self, crew_with_registry):
+        """Should skip deps not found in registry."""
+        meta = {"deps": ["src/nonexistent.py"]}
+        ctx = crew_with_registry._dependency_context("src/routes.py", meta)
+        assert ctx == ""
+
+    def test_dep_with_no_code(self, crew_with_registry):
+        """Should skip deps that have no code yet."""
+        meta = {"deps": ["src/routes.py"]}  # routes.py has empty code
+        ctx = crew_with_registry._dependency_context("src/main.py", meta)
+        assert ctx == ""
+
+    def test_respects_char_budget(self, crew_with_registry):
+        """Should truncate deps exceeding the character budget."""
+        # Add a very large file
+        crew_with_registry.board.registry["src/big.py"] = FileEntry(
+            name="src/big.py",
+            code="x = 1\n" * 10_000,  # ~60KB
+            approved=True,
+        )
+        meta = {"deps": ["src/big.py"]}
+        ctx = crew_with_registry._dependency_context("src/routes.py", meta)
+        assert "truncated" in ctx
+        assert len(ctx) < 35_000
+
+    def test_prompt_template_has_dependency_context(self):
+        """DEV_TASK template should accept dependency_context field."""
+        from hive.prompts import DEV_TASK
+        assert "{dependency_context}" in DEV_TASK
+
+    def test_revision_template_has_dependency_context(self):
+        """DEV_REVISION_TASK template should accept dependency_context field."""
+        from hive.prompts import DEV_REVISION_TASK
+        assert "{dependency_context}" in DEV_REVISION_TASK
+
+    def test_sandbox_template_has_dependency_context(self):
+        """DEV_SANDBOX_REVISION_TASK template should accept dependency_context field."""
+        from hive.prompts import DEV_SANDBOX_REVISION_TASK
+        assert "{dependency_context}" in DEV_SANDBOX_REVISION_TASK
 
 
 if __name__ == "__main__":

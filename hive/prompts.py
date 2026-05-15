@@ -564,7 +564,7 @@ DEV_TASK = """\
 
 APPROVED FILES (use these interfaces):
 {approved_interfaces}
-
+{dependency_context}
 YOUR ASSIGNMENT — implement this file:
   File: {filename}
   Purpose: {purpose}
@@ -587,7 +587,7 @@ DEV_REVISION_TASK = """\
 
 APPROVED FILES:
 {approved_interfaces}
-
+{dependency_context}
 YOUR CURRENT CODE for {filename}:
 ```
 {current_code}
@@ -609,7 +609,7 @@ DEV_SANDBOX_REVISION_TASK = """\
 
 APPROVED FILES:
 {approved_interfaces}
-
+{dependency_context}
 YOUR CURRENT CODE for {filename}:
 ```
 {current_code}

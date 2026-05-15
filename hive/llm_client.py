@@ -47,6 +47,7 @@ import os
 import random
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -198,9 +199,16 @@ class LLMClient:
         thinking: dict | None = None,
         cache_control_msgs: bool = False,
         retries: int = 5,
+        on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         """
         Send a chat request with resilient retry + tier escalation.
+
+        Args:
+            on_token: Optional callback invoked with each text token as it
+                streams from the LLM. Works with all backends (Anthropic SDK,
+                Anthropic HTTP, OpenAI-compatible). Pass ``None`` to disable
+                streaming and collect the full response at once (default).
 
         Retry strategy (up to `retries` attempts):
           1. Try with the requested tier/model.
@@ -250,14 +258,17 @@ class LLMClient:
             try:
                 if fmt == self.ANTHROPIC_NATIVE:
                     resp = self._chat_anthropic_sdk(system, messages, current_model,
-                                                   temperature, max_tokens, current_thinking)
+                                                   temperature, max_tokens, current_thinking,
+                                                   on_token=on_token)
                 elif fmt == self.ANTHROPIC_PROXY:
                     resp = self._chat_anthropic_http(system, messages, current_model,
                                                     temperature, max_tokens, current_thinking,
-                                                    path_prefix="/anthropic")
+                                                    path_prefix="/anthropic",
+                                                    on_token=on_token)
                 else:
                     resp = self._chat_openai(system, messages, current_model,
-                                            temperature, max_tokens)
+                                            temperature, max_tokens,
+                                            on_token=on_token)
 
                 # Success — attach resilience metadata
                 resp.tier_requested = requested_tier.value
@@ -444,7 +455,8 @@ class LLMClient:
         return self._anthropic_client
 
     def _chat_anthropic_sdk(
-        self, system, messages, model, temperature, max_tokens, thinking
+        self, system, messages, model, temperature, max_tokens, thinking,
+        *, on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         client = self._get_anthropic_client()
         kwargs: dict[str, Any] = {
@@ -460,9 +472,24 @@ class LLMClient:
             kwargs["temperature"] = temperature
 
         with client.messages.stream(**kwargs) as stream:
-            response = stream.get_final_message()
-
-        text = next((b.text for b in response.content if b.type == "text"), "")
+            if on_token:
+                # Stream tokens to callback as they arrive
+                collected_text: list[str] = []
+                for event in stream:
+                    if hasattr(event, "type") and event.type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta and getattr(delta, "type", "") == "text_delta":
+                            token = getattr(delta, "text", "")
+                            if token:
+                                on_token(token)
+                                collected_text.append(token)
+                response = stream.get_final_message()
+                text = "".join(collected_text) or next(
+                    (b.text for b in response.content if b.type == "text"), ""
+                )
+            else:
+                response = stream.get_final_message()
+                text = next((b.text for b in response.content if b.type == "text"), "")
         usage = response.usage
         return LLMResponse(
             text=text,
@@ -480,6 +507,7 @@ class LLMClient:
     def _chat_anthropic_http(
         self, system, messages, model, temperature, max_tokens, thinking,
         path_prefix: str = "",
+        *, on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -498,6 +526,13 @@ class LLMClient:
             payload["thinking"] = thinking
         else:
             payload["temperature"] = temperature
+
+        # Enable SSE streaming when on_token callback is provided
+        if on_token:
+            payload["stream"] = True
+            return self._stream_anthropic_http(
+                headers, payload, model, path_prefix, on_token
+            )
 
         resp = httpx.post(
             f"{self.base_url}{path_prefix}/v1/messages",
@@ -546,10 +581,81 @@ class LLMClient:
             raw=data,
         )
 
+    def _stream_anthropic_http(
+        self,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        model: str,
+        path_prefix: str,
+        on_token: Callable[[str], None],
+    ) -> LLMResponse:
+        """Stream Anthropic HTTP SSE and invoke on_token for each text delta."""
+        collected: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+        cache_read = 0
+        cache_write = 0
+        stop_reason = ""
+
+        with httpx.stream(
+            "POST",
+            f"{self.base_url}{path_prefix}/v1/messages",
+            headers=headers,
+            json=payload,
+            timeout=self.http_timeout,
+        ) as resp:
+            if resp.status_code != 200:
+                resp.read()
+                body_preview = resp.text[:300] if resp.text else "(empty)"
+                raise httpx.HTTPStatusError(
+                    f"{resp.status_code} for {resp.url} — {body_preview}",
+                    request=resp.request,
+                    response=resp,
+                )
+            for line in resp.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                etype = event.get("type", "")
+                if etype == "content_block_delta":
+                    delta = event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        token = delta.get("text", "")
+                        if token:
+                            on_token(token)
+                            collected.append(token)
+                elif etype == "message_start":
+                    msg = event.get("message", {})
+                    usage = msg.get("usage", {})
+                    input_tokens = usage.get("input_tokens", 0)
+                elif etype == "message_delta":
+                    usage = event.get("usage", {})
+                    output_tokens = usage.get("output_tokens", 0)
+                    stop_reason = event.get("delta", {}).get("stop_reason", "")
+
+        return LLMResponse(
+            text="".join(collected),
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            stop_reason=stop_reason,
+            raw=None,
+        )
+
     # ── OpenAI-compatible HTTP ────────────────────────────────────────────────
 
     def _chat_openai(
-        self, system, messages, model, temperature, max_tokens
+        self, system, messages, model, temperature, max_tokens,
+        *, on_token: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -576,6 +682,11 @@ class LLMClient:
             "max_tokens": max_tokens,
         }
 
+        # Enable SSE streaming when on_token callback is provided
+        if on_token:
+            payload["stream"] = True
+            return self._stream_openai(headers, payload, model, on_token)
+
         resp = httpx.post(
             f"{self.base_url}/v1/chat/completions",
             headers=headers,
@@ -596,6 +707,58 @@ class LLMClient:
             output_tokens=usage.get("completion_tokens", 0),
             stop_reason=choice.get("finish_reason", ""),
             raw=data,
+        )
+
+    def _stream_openai(
+        self,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        model: str,
+        on_token: Callable[[str], None],
+    ) -> LLMResponse:
+        """Stream OpenAI-compatible SSE and invoke on_token for each delta."""
+        collected: list[str] = []
+        stop_reason = ""
+
+        with httpx.stream(
+            "POST",
+            f"{self.base_url}/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=self.http_timeout,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                choices = event.get("choices", [])
+                if choices:
+                    delta = choices[0].get("delta", {})
+                    token = delta.get("content", "")
+                    if token:
+                        on_token(token)
+                        collected.append(token)
+                    finish = choices[0].get("finish_reason")
+                    if finish:
+                        stop_reason = finish
+
+        # OpenAI streaming doesn't always include usage — estimate from text
+        text = "".join(collected)
+        return LLMResponse(
+            text=text,
+            model=model,
+            input_tokens=0,  # not available in streaming responses
+            output_tokens=0,
+            stop_reason=stop_reason,
+            raw=None,
         )
 
     # ── Cache control helper ──────────────────────────────────────────────────

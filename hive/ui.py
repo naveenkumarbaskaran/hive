@@ -345,6 +345,7 @@ class TerminalUI:
         print(colored("    • Reference code      (.py, .ts, .go, ...)", C.DIM))
         print(colored("    • Full folders        (/path/to/project/)", C.DIM))
         print(colored("    • Git repos           (https://github.com/user/repo)", C.DIM))
+        print(colored("    • URLs                (https://example.com/spec.yaml)", C.DIM))
         print()
         print(colored("  Enter paths (comma-separated), or press Enter to skip:", C.WHITE, C.BOLD))
         print(colored("    > ", C.DIM), end="")

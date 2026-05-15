@@ -8,6 +8,7 @@ conversation history — the Blackboard is the single source of truth.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from hive.llm_client import LLMClient, ModelTier
@@ -49,8 +50,14 @@ class Agent:
         client: LLMClient | None = None,
         max_tokens: int = 8192,
         retries: int = 5,
+        on_token: Callable[[str], None] | None = None,
     ) -> str:
-        """Ask this agent to reason about a task. Logs to the Logbook. Returns response text."""
+        """Ask this agent to reason about a task. Logs to the Logbook. Returns response text.
+
+        Args:
+            on_token: Optional callback invoked with each text token as it
+                streams from the LLM. Enables live streaming in the UI.
+        """
         client = client or _default_llm
         thinking_cfg = {"type": "adaptive"} if self.thinking else None
 
@@ -69,6 +76,7 @@ class Agent:
                 max_tokens=max_tokens,
                 thinking=thinking_cfg,
                 retries=retries,
+                on_token=on_token,
             )
             # Record in logbook
             board.log_llm_call(LogEntry(
