@@ -14,7 +14,14 @@ from hive.connectors import ConnectorRegistry, KnowledgeItem, codebase_index
 from hive.crew import EPTCrew
 from hive.dashboard import DashboardServer
 from hive.memory import MemoryEntry, MemoryManager
-from hive.sandbox import Sandbox, SandboxResult, run_code_checks, syntax_check_file
+from hive.sandbox import (
+    Sandbox,
+    SandboxResult,
+    detect_entry_point,
+    preview_app,
+    run_code_checks,
+    syntax_check_file,
+)
 from hive.state import (
     Amendment,
     Blackboard,
@@ -60,6 +67,8 @@ __all__ = [
     "SandboxResult",
     "run_code_checks",
     "syntax_check_file",
+    "preview_app",
+    "detect_entry_point",
     "CostTracker",
     "BudgetExceeded",
     "estimate_cost",

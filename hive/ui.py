@@ -1334,3 +1334,261 @@ class TerminalUI:
         print()
         print(colored("═" * w, C.CYAN))
         print()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Post-release "What's Next?" menu
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def post_release_menu(self) -> str | None:
+        """Show an interactive post-release menu. Returns chosen action or None.
+
+        Actions:
+          - ``"preview"`` — run the built application
+          - ``"tests"``   — run the test suite
+          - ``"open"``    — open the project folder
+          - ``"view"``    — view a source file
+          - ``"exit"``    — done
+        """
+        b = self.board
+        w = term_width()
+
+        # Build file list
+        source_files = sorted(
+            name for name, entry in b.registry.items()
+            if entry.approved and not name.startswith("test_")
+        )
+        test_files = sorted(
+            name for name, entry in b.registry.items()
+            if entry.approved and name.startswith("test_")
+        )
+
+        while True:
+            print()
+            print(colored("  ┌" + "─" * (w - 6) + "┐", C.CYAN))
+            print(
+                colored("  │", C.CYAN)
+                + colored("  🚀 WHAT'S NEXT?", C.BOLD, C.CYAN)
+                + " " * max(0, w - 25)
+                + colored("│", C.CYAN)
+            )
+            print(colored("  └" + "─" * (w - 6) + "┘", C.CYAN))
+            print()
+            print(colored("    [r]", C.GREEN, C.BOLD) + colored("  Run app preview", C.WHITE))
+            print(colored("    [t]", C.GREEN, C.BOLD) + colored("  Run tests", C.WHITE))
+            print(colored("    [v]", C.GREEN, C.BOLD) + colored("  View source file", C.WHITE))
+            print(colored("    [o]", C.GREEN, C.BOLD) + colored("  Open project folder", C.WHITE))
+            print(colored("    [q]", C.DIM, C.BOLD) + colored("  Exit", C.DIM))
+            print()
+            print(colored("  Choice: ", C.BOLD), end="")
+
+            try:
+                choice = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return "exit"
+
+            if choice in ("r", "run", "preview"):
+                self._preview_app(source_files)
+            elif choice in ("t", "test", "tests"):
+                self._run_tests()
+            elif choice in ("v", "view"):
+                self._view_file(source_files + test_files)
+            elif choice in ("o", "open"):
+                self._open_project()
+                return "open"
+            elif choice in ("q", "quit", "exit", ""):
+                print(colored("\n  👋 Happy shipping!\n", C.CYAN))
+                return "exit"
+            else:
+                print(colored(f"  Unknown option: {choice!r}", C.RED))
+
+    def _preview_app(self, source_files: list[str]) -> None:
+        """Run the built application in a sandbox preview."""
+        from hive.sandbox import SANDBOX_ENABLED, detect_entry_point, preview_app
+
+        if not SANDBOX_ENABLED:
+            print(colored("  ⚠️  Sandbox is disabled (HIVE_SANDBOX_ENABLED=0)", C.YELLOW))
+            return
+
+        b = self.board
+
+        # Gather all approved source code
+        all_files: dict[str, str] = {}
+        for name, entry in b.registry.items():
+            if entry.approved and entry.code:
+                all_files[name] = entry.code
+
+        if not all_files:
+            print(colored("  ⚠️  No approved source files to run.", C.YELLOW))
+            return
+
+        # Detect entry point
+        entry = detect_entry_point(all_files)
+        if not entry:
+            print(colored("  ⚠️  Could not auto-detect entry point.", C.YELLOW))
+            print(colored("    Source files: " + ", ".join(source_files), C.DIM))
+            print(colored("    Enter the main file to run: ", C.BOLD), end="")
+            try:
+                entry = input().strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if not entry or entry not in all_files:
+                print(colored(f"  ❌ File {entry!r} not found in approved files.", C.RED))
+                return
+
+        # Ask for optional arguments
+        print(colored(f"\n  🎯 Entry point: {entry}", C.GREEN, C.BOLD))
+        print(colored("  Args (optional, Enter to skip): ", C.DIM), end="")
+        try:
+            args_input = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            args_input = ""
+
+        args = args_input.split() if args_input else None
+
+        # Run it
+        print()
+        print(colored("  ⏳ Running application preview...", C.CYAN))
+        print(colored("  " + "─" * 60, C.DIM))
+
+        result = preview_app(all_files, entry, args=args, timeout=30)
+
+        # Display output
+        if result.stdout:
+            for line in result.stdout.splitlines():
+                print(colored("  │ ", C.DIM) + line)
+        if result.stderr:
+            print()
+            for line in result.stderr.splitlines():
+                print(colored("  │ ", C.RED) + line)
+
+        print(colored("  " + "─" * 60, C.DIM))
+
+        if result.success:
+            print(colored("  ✅ App exited successfully (code 0)", C.GREEN, C.BOLD))
+        elif result.timeout:
+            print(colored("  ⏱️  App timed out (long-running server?)", C.YELLOW))
+        else:
+            print(colored(f"  ❌ App exited with code {result.exit_code}", C.RED))
+
+    def _run_tests(self) -> None:
+        """Run the project's test suite in a sandbox."""
+        from hive.sandbox import SANDBOX_ENABLED, run_all_tests_in_context
+
+        if not SANDBOX_ENABLED:
+            print(colored("  ⚠️  Sandbox is disabled (HIVE_SANDBOX_ENABLED=0)", C.YELLOW))
+            return
+
+        b = self.board
+
+        # Gather all approved files (source + tests)
+        all_files: dict[str, str] = {}
+        for name, entry in b.registry.items():
+            if entry.approved and entry.code:
+                all_files[name] = entry.code
+
+        test_count = sum(1 for f in all_files if f.startswith("test_"))
+        if test_count == 0:
+            print(colored("  ⚠️  No test files found in approved files.", C.YELLOW))
+            return
+
+        print(colored(f"\n  🧪 Running {test_count} test file(s)...", C.CYAN))
+        print(colored("  " + "─" * 60, C.DIM))
+
+        result = run_all_tests_in_context(all_files, timeout=60)
+
+        # Display output
+        if result.stdout:
+            for line in result.stdout.splitlines():
+                print(colored("  │ ", C.DIM) + line)
+        if result.stderr:
+            # Only show stderr if there's something meaningful
+            meaningful = [
+                ln for ln in result.stderr.splitlines()
+                if ln.strip() and not ln.strip().startswith("=")
+            ]
+            if meaningful:
+                print()
+                for line in meaningful[:20]:
+                    print(colored("  │ ", C.YELLOW) + line)
+
+        print(colored("  " + "─" * 60, C.DIM))
+
+        if result.success:
+            print(colored("  ✅ All tests passed!", C.GREEN, C.BOLD))
+        else:
+            print(colored("  ❌ Some tests failed.", C.RED, C.BOLD))
+
+    def _view_file(self, files: list[str]) -> None:
+        """Let the user pick and view a source file."""
+        b = self.board
+
+        if not files:
+            print(colored("  ⚠️  No files to view.", C.YELLOW))
+            return
+
+        print()
+        for i, name in enumerate(files, 1):
+            entry = b.registry.get(name)
+            lines = len(entry.code.splitlines()) if entry and entry.code else 0
+            print(colored(f"    {i:2}. ", C.GREEN) + colored(name, C.WHITE, C.BOLD)
+                  + colored(f" ({lines} lines)", C.DIM))
+
+        print()
+        print(colored("  File # or name: ", C.BOLD), end="")
+        try:
+            choice = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+
+        # Resolve selection
+        target = None
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(files):
+                target = files[idx]
+        else:
+            if choice in files:
+                target = choice
+
+        if not target:
+            print(colored(f"  ❌ Invalid selection: {choice!r}", C.RED))
+            return
+
+        entry = b.registry.get(target)
+        if not entry or not entry.code:
+            print(colored(f"  ❌ No code found for {target}", C.RED))
+            return
+
+        # Display with line numbers
+        print()
+        print(colored(f"  ── {target} ──", C.CYAN, C.BOLD))
+        print()
+        for i, line in enumerate(entry.code.splitlines(), 1):
+            num = f"{i:4d}"
+            print(colored(f"    {num} │ ", C.DIM) + line)
+        print()
+
+    def _open_project(self) -> None:
+        """Open the project folder in the system file manager."""
+        import subprocess as sp
+
+        b = self.board
+        project_dir = b.project_root
+        if not project_dir.exists():
+            print(colored("  ⚠️  Project directory not found.", C.YELLOW))
+            return
+
+        print(colored(f"  📂 Opening: {project_dir}", C.CYAN))
+        try:
+            if sys.platform == "darwin":
+                sp.Popen(["open", str(project_dir)])
+            elif sys.platform == "win32":
+                sp.Popen(["explorer", str(project_dir)])
+            else:
+                sp.Popen(["xdg-open", str(project_dir)])
+        except Exception as exc:
+            print(colored(f"  ⚠️  Could not open folder: {exc}", C.YELLOW))
+            print(colored(f"  📂 Path: {project_dir}", C.DIM))

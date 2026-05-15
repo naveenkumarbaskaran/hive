@@ -5695,3 +5695,167 @@ class TestBrownfieldModifyMode:
         mock_client = MagicMock()
         crew = EPTCrew("test", client=mock_client, modify_path="/tmp/myproject")
         assert crew.modify_path == "/tmp/myproject"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Post-release: detect_entry_point, preview_app, post_release_menu
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDetectEntryPoint:
+    """Tests for sandbox.detect_entry_point()."""
+
+    def test_detects_main_py(self):
+        from hive.sandbox import detect_entry_point
+        files = {"main.py": "print('hello')", "utils.py": "x = 1", "test_app.py": "pass"}
+        assert detect_entry_point(files) == "main.py"
+
+    def test_detects_cli_py(self):
+        from hive.sandbox import detect_entry_point
+        files = {"cli.py": "import click", "models.py": "class X: pass"}
+        assert detect_entry_point(files) == "cli.py"
+
+    def test_detects_app_py(self):
+        from hive.sandbox import detect_entry_point
+        files = {"app.py": "import flask", "config.py": "DB = 'sqlite'"}
+        assert detect_entry_point(files) == "app.py"
+
+    def test_detects_dunder_main(self):
+        from hive.sandbox import detect_entry_point
+        files = {"__main__.py": "from . import cli; cli()", "utils.py": "x = 1"}
+        assert detect_entry_point(files) == "__main__.py"
+
+    def test_priority_main_over_cli(self):
+        from hive.sandbox import detect_entry_point
+        files = {"main.py": "print('hi')", "cli.py": "import click"}
+        assert detect_entry_point(files) == "main.py"
+
+    def test_falls_back_to_if_name_main(self):
+        from hive.sandbox import detect_entry_point
+        files = {
+            "calculator.py": (
+                "import argparse\n\n"
+                "def run(): pass\n\n"
+                "if __name__ == '__main__':\n"
+                "    run()\n"
+            ),
+            "utils.py": "def helper(): pass",
+        }
+        assert detect_entry_point(files) == "calculator.py"
+
+    def test_scores_argparse_higher(self):
+        from hive.sandbox import detect_entry_point
+        files = {
+            "commands.py": "if __name__ == '__main__':\n    pass\n",
+            "entry.py": (
+                "import argparse\n"
+                "def main(): pass\n"
+                "if __name__ == '__main__':\n"
+                "    main()\n"
+            ),
+        }
+        assert detect_entry_point(files) == "entry.py"
+
+    def test_returns_none_for_no_entry(self):
+        from hive.sandbox import detect_entry_point
+        files = {"utils.py": "x = 1", "config.py": "DB = 'foo'"}
+        assert detect_entry_point(files) is None
+
+    def test_skips_test_files(self):
+        from hive.sandbox import detect_entry_point
+        files = {"test_main.py": "if __name__ == '__main__': pass", "models.py": "x = 1"}
+        assert detect_entry_point(files) is None
+
+
+class TestPreviewApp:
+    """Tests for sandbox.preview_app()."""
+
+    def test_preview_app_runs_simple_script(self):
+        from hive.sandbox import preview_app
+        files = {"main.py": "print('Hello from preview!')"}
+        result = preview_app(files, "main.py")
+        assert result.success
+        assert "Hello from preview!" in result.stdout
+
+    def test_preview_app_with_args(self):
+        from hive.sandbox import preview_app
+        code = "import sys\nprint(' '.join(sys.argv[1:]))"
+        files = {"main.py": code}
+        result = preview_app(files, "main.py", args=["foo", "bar"])
+        assert result.success
+        assert "foo bar" in result.stdout
+
+    def test_preview_app_missing_entry_point(self):
+        from hive.sandbox import preview_app
+        files = {"utils.py": "x = 1"}
+        result = preview_app(files, "main.py")
+        assert not result.success
+        assert "not found" in (result.error or "")
+
+    def test_preview_app_exit_code_nonzero(self):
+        from hive.sandbox import preview_app
+        files = {"main.py": "import sys; sys.exit(1)"}
+        result = preview_app(files, "main.py")
+        assert not result.success
+        assert result.exit_code == 1
+
+    def test_preview_app_syntax_error(self):
+        from hive.sandbox import preview_app
+        files = {"main.py": "def broken(\n"}
+        result = preview_app(files, "main.py")
+        assert not result.success
+
+    def test_preview_app_sandbox_disabled(self, monkeypatch):
+        from hive import sandbox as sb_mod
+        from hive.sandbox import preview_app
+        monkeypatch.setattr(sb_mod, "SANDBOX_ENABLED", False)
+        files = {"main.py": "print('hi')"}
+        result = preview_app(files, "main.py")
+        assert result.success
+        assert "disabled" in result.stdout.lower()
+
+
+class TestPostReleaseMenu:
+    """Tests for TerminalUI.post_release_menu()."""
+
+    def test_exit_immediately(self, monkeypatch):
+        bb = Blackboard(feature="test menu")
+        ui = TerminalUI(bb)
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: "q")
+        result = ui.post_release_menu()
+        assert result == "exit"
+
+    def test_open_returns_open(self, monkeypatch, tmp_path):
+        bb = Blackboard(feature="test menu")
+        bb.project_slug = "test_project"
+        # Ensure the directory exists
+        import hive.state as st
+        monkeypatch.setattr(st, "PROJECTS_DIR", tmp_path)
+        (tmp_path / "test_project").mkdir(parents=True, exist_ok=True)
+        ui = TerminalUI(bb)
+        # Mock: first input is 'o' (open), but mock Popen to avoid actually opening
+        inputs = iter(["o"])
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: next(inputs))
+        with patch("subprocess.Popen"):
+            result = ui.post_release_menu()
+        assert result == "open"
+
+    def test_view_file(self, monkeypatch, capsys):
+        bb = Blackboard(feature="test view")
+        bb.registry["main.py"] = FileEntry(
+            name="main.py", approved=True, code="print('hello')"
+        )
+        ui = TerminalUI(bb)
+        inputs = iter(["v", "1", "q"])
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: next(inputs))
+        result = ui.post_release_menu()
+        assert result == "exit"
+        out = capsys.readouterr().out
+        assert "hello" in out
+
+    def test_eof_graceful(self, monkeypatch):
+        bb = Blackboard(feature="test eof")
+        ui = TerminalUI(bb)
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(EOFError))
+        result = ui.post_release_menu()
+        assert result == "exit"

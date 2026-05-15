@@ -658,3 +658,78 @@ def run_all_tests_in_context(
     with Sandbox(timeout=timeout) as sb:
         sb.add_files(all_files)
         return sb.run_tests()
+
+
+def preview_app(
+    all_files: dict[str, str],
+    entry_point: str,
+    args: list[str] | None = None,
+    timeout: int = SANDBOX_TIMEOUT,
+) -> SandboxResult:
+    """Stage all project files and run the entry point script.
+
+    Provides a safe preview of the built application by executing it
+    in an isolated sandbox with restricted environment variables.
+
+    Args:
+        all_files: All source files to stage.
+        entry_point: The file to run (e.g. ``main.py`` or ``cli.py``).
+        args: Optional CLI arguments to pass to the script.
+        timeout: Max seconds for execution.
+
+    Returns:
+        SandboxResult with the app's stdout/stderr and exit code.
+    """
+    if not SANDBOX_ENABLED:
+        return SandboxResult(success=True, stdout="Sandbox disabled (HIVE_SANDBOX_ENABLED=0)")
+
+    if entry_point not in all_files:
+        return SandboxResult(
+            success=False,
+            error=f"Entry point {entry_point!r} not found in project files",
+            command=f"python3 {entry_point}",
+        )
+
+    with Sandbox(timeout=timeout) as sb:
+        sb.add_files(all_files)
+        return sb.run_script(entry_point, args=args)
+
+
+def detect_entry_point(files: dict[str, str]) -> str | None:
+    """Auto-detect the most likely entry point from project files.
+
+    Checks for common patterns:
+    1. ``main.py`` — standard entry
+    2. File containing ``if __name__`` block with argparse/click/sys.argv
+    3. ``cli.py`` / ``app.py`` / ``server.py`` — conventional names
+    4. ``__main__.py`` — package entry
+
+    Returns the filename or None if no entry point is found.
+    """
+    priority_names = ["main.py", "__main__.py", "cli.py", "app.py", "server.py", "run.py"]
+
+    # 1. Check priority names
+    for name in priority_names:
+        if name in files:
+            return name
+
+    # 2. Scan for if __name__ == "__main__" with argument handling
+    candidates: list[tuple[int, str]] = []
+    for name, code in files.items():
+        if not name.endswith(".py") or name.startswith("test_"):
+            continue
+        if '__name__' in code and '__main__' in code:
+            # Score by presence of CLI indicators
+            score = 0
+            for pattern in ("argparse", "click", "sys.argv", "typer", "fire"):
+                if pattern in code:
+                    score += 10
+            if "def main" in code:
+                score += 5
+            candidates.append((score, name))
+
+    if candidates:
+        candidates.sort(key=lambda x: (-x[0], x[1]))
+        return candidates[0][1]
+
+    return None

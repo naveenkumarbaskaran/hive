@@ -472,6 +472,14 @@ class EPTCrew:
         self.board._memory_stats = self.memory.stats()
         self.board._cost_tracker = self.cost_tracker
         self.ui.final_summary()
+
+        # ── Post-release interactive menu (skip in auto mode) ──
+        if not self.auto_approve and "release" in self.board.completed_phases:
+            try:
+                self.ui.post_release_menu()
+            except Exception as exc:
+                logger.debug("Post-release menu error: %s", exc)
+
         return self.board
 
     # ─────────────────────────────────────────────────────────────────────────
